@@ -1,0 +1,27 @@
+# build output
+httpd
+client
+benchmark
+*.o
+*.out
+*.dSYM
+
+# logs
+*.log
+*.log.*
+access.log
+server.log
+logs/
+
+# macOS
+.DS_Store
+
+# temp files
+*.tmp
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# test artifacts
+tests/tmp/
