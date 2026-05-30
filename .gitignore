@@ -25,3 +25,4 @@ logs/
 
 # test artifacts
 tests/tmp/
+docs/project_interview_notes.md
