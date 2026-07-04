@@ -178,11 +178,30 @@ int resolve_safe_path(int client, const char *url, char *path,
 
 int is_path_traversal(const char *path)
 {
- if (path == NULL)
-  return 1;
+	const char *p;
+	const char *start;
 
- if (strstr(path, "..") != NULL)
-  return 1;
+	if (path == NULL)
+		return 1;
 
- return 0;
+	p = path;
+	while (*p)
+	{
+		/* 跳过连续的 '/' */
+		while (*p == '/')
+			p++;
+		if (*p == '\0')
+			break;
+
+		/* 计算当前路径组件 */
+		start = p;
+		while (*p != '\0' && *p != '/')
+			p++;
+
+		/* 长度恰好为 2 且两个字符都是 '.' */
+		if (p == start + 2 && start[0] == '.' && start[1] == '.')
+			return 1;
+	}
+
+	return 0;
 }

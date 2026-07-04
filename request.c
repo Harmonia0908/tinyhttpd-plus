@@ -50,9 +50,12 @@ void accept_request(int client)
  int content_length = -1;
  int status;
 
- snprintf(client_ip, sizeof(client_ip), "-");
- if (getpeername(client, (struct sockaddr *)&client_addr, &client_len) == 0)
-  inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+ if (getpeername(client, (struct sockaddr *)&client_addr, &client_len) == 0) {
+  if (inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN) == NULL)
+   snprintf(client_ip, sizeof(client_ip), "-");
+ } else {
+  snprintf(client_ip, sizeof(client_ip), "-");
+ }
 
  status = parse_request_line(client, method, sizeof(method), url, sizeof(url));
  if (status != 0)

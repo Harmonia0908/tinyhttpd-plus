@@ -26,3 +26,7 @@ logs/
 # test artifacts
 tests/tmp/
 docs/project_interview_notes.md
+
+# code analysis / graph generation artifacts
+.codegraph/
+graphify-out/
