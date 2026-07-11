@@ -56,7 +56,7 @@ Current coverage includes:
 - CGI timeout handling releases workers instead of blocking the pool permanently.
 - SIGTERM during a busy CGI worker drains the pool and releases the listening port.
 - Overlong URI, missing URI, duplicate `Content-Length`, and maximum body-length boundaries.
-- Sixteen synchronized concurrent CGI children do not inherit unrelated descriptors across `execve()`.
+- Sixteen synchronized concurrent CGI children do not inherit unrelated descriptors in the tested fd range 3-255 across `execve()`.
 - Thread-pool initialization failures, task draining, processed count, and repeated shutdown.
 - Configuration, access/error logging, and MIME mappings.
 

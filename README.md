@@ -226,7 +226,7 @@ make sanitizer-test  # ASan + UBSan 构建并运行同一套测试
   - 缺失 URI 和重复 `Content-Length` 返回 400。
   - 最大允许 `Content-Length` 边界。
 - `tests/cgi_test.c` / `tests/cgi_fd_probe.c`
-  - 16 个同步并发 CGI 在 `exec` 后不继承任何 `fd >= 3` 的无关描述符。
+  - 16 个同步并发 CGI 在 `exec` 后不继承测试范围 `fd 3-255` 内的无关描述符。
 - `tests/threadpool_test.c`
   - 初始化参数、显式失败返回、任务排空和重复 shutdown。
 
