@@ -40,6 +40,8 @@ int startup(u_short *port)
  httpd = socket(PF_INET, SOCK_STREAM, 0);
  if (httpd == -1)
   error_die("socket");
+ if (set_cloexec(httpd) == -1)
+  error_die("fcntl(FD_CLOEXEC)");
  
  // 设置 SO_REUSEADDR，避免端口占用问题
  if (setsockopt(httpd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
@@ -105,6 +107,12 @@ int server_run(u_short port)
     continue;
    }
    error_die("accept");
+  }
+
+  if (set_cloexec(client_sock) == -1) {
+   perror("fcntl(FD_CLOEXEC)");
+   close(client_sock);
+   continue;
   }
 
   if (threadpool_submit(client_sock) != 0) {

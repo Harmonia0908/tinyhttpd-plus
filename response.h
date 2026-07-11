@@ -10,5 +10,6 @@ void not_found(int client);
 void send_error_page(int client, int status_code, const char *status_text, const char *message);
 void unimplemented(int client);
 void send_413(int client);
+void uri_too_long(int client);
 
 #endif

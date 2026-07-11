@@ -18,7 +18,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define ISspace(x) isspace((int)(x))
+#define ISspace(x) isspace((unsigned char)(x))
 
 /*
  * Write error log entries for request failures with status codes that are
@@ -174,7 +174,15 @@ int parse_request_line(int client, char *method, size_t method_size,
 {
  char buf[1024];
  int numchars;
- size_t i, j;
+ size_t line_length;
+ size_t i;
+ size_t j;
+
+ if (method == NULL || url == NULL || method_size < 2 || url_size < 2)
+  return -1;
+
+ method[0] = '\0';
+ url[0] = '\0';
 
  numchars = get_line(client, buf, sizeof(buf));
 
@@ -187,31 +195,53 @@ int parse_request_line(int client, char *method, size_t method_size,
   return 400;
  }
 
- i = 0; j = 0;
- while (!ISspace(buf[j]) && (i < method_size - 1))
+ line_length = (size_t)numchars;
+ i = 0;
+ j = 0;
+ while (j < line_length && !ISspace(buf[j]))
  {
+  if (i + 1 >= method_size)
+  {
+   unimplemented(client);
+   return 501;
+  }
   method[i] = buf[j];
-  i++; j++;
+  i++;
+  j++;
  }
  method[i] = '\0';
 
- if (strcasecmp(method, "GET") && strcasecmp(method, "POST") &&
+ if (method[0] == '\0' ||
+     (strcasecmp(method, "GET") && strcasecmp(method, "POST") &&
      strcasecmp(method, "HEAD") && strcasecmp(method, "OPTIONS"))
+    )
  {
   unimplemented(client);
   return 501;
  }
 
  i = 0;
- while (ISspace(buf[j]) && (j < sizeof(buf)))
+ while (j < line_length && ISspace(buf[j]))
   j++;
 
- while (!ISspace(buf[j]) && (i < url_size - 1) && (j < sizeof(buf)))
+ while (j < line_length && !ISspace(buf[j]))
  {
+  if (i + 1 >= url_size)
+  {
+   uri_too_long(client);
+   return 414;
+  }
   url[i] = buf[j];
-  i++; j++;
+  i++;
+  j++;
  }
  url[i] = '\0';
+
+ if (url[0] == '\0' || url[0] != '/')
+ {
+  bad_request(client);
+  return 400;
+ }
 
  return 0;
 }
@@ -220,6 +250,7 @@ int read_headers(int client, int *content_length)
 {
  char buf[MAX_HEADER_LINE_SIZE];
  int numchars;
+ int content_length_seen = 0;
  size_t header_size = 0;
 
  if (content_length != NULL)
@@ -248,6 +279,10 @@ int read_headers(int client, int *content_length)
    char *value = buf + 15;
    char *end;
    long len;
+
+   if (content_length_seen)
+    return 400;
+   content_length_seen = 1;
 
    while (ISspace(*value))
     value++;

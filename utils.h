@@ -16,5 +16,6 @@ int get_line(int sock, char *buf, int size);
 int is_path_traversal(const char *path);
 int resolve_safe_path(int client, const char *url, char *path, size_t path_size, struct stat *st, int check_file);
 int send_all(int client, const void *data, size_t len);
+int set_cloexec(int fd);
 
 #endif

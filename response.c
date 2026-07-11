@@ -87,3 +87,9 @@ void send_413(int client)
  send_error_page(client, 413, "Payload Too Large", 
   "Request size exceeds the configured limit.");
 }
+
+void uri_too_long(int client)
+{
+ send_error_page(client, 414, "URI Too Long",
+  "The requested URI exceeds the server limit.");
+}

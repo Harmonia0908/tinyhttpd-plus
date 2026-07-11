@@ -4,7 +4,9 @@
 #include "response.h"
 #include "utils.h"
 
+#include <errno.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +14,121 @@
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+extern char **environ;
+
+#define CGI_ENV_BUFFER_SIZE 1024
+
+static int is_cgi_environment_entry(const char *entry)
+{
+ static const char *names[] = {
+  "REQUEST_METHOD=", "QUERY_STRING=", "CONTENT_LENGTH="
+ };
+ size_t i;
+
+ for (i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+ {
+  size_t name_length = strlen(names[i]);
+  if (strncmp(entry, names[i], name_length) == 0)
+   return 1;
+ }
+ return 0;
+}
+
+static char **build_cgi_environment(const char *method,
+                                    const char *query_string,
+                                    int content_length,
+                                    char method_env[CGI_ENV_BUFFER_SIZE],
+                                    char query_env[CGI_ENV_BUFFER_SIZE],
+                                    char length_env[CGI_ENV_BUFFER_SIZE])
+{
+ char **cgi_env;
+ size_t environment_count = 0;
+ size_t output_count = 0;
+ size_t i;
+ int result;
+ int is_post = strcasecmp(method, "POST") == 0;
+
+ result = snprintf(method_env, CGI_ENV_BUFFER_SIZE,
+                   "REQUEST_METHOD=%s", method);
+ if (result < 0 || result >= CGI_ENV_BUFFER_SIZE)
+  return NULL;
+
+ if (is_post)
+  result = snprintf(length_env, CGI_ENV_BUFFER_SIZE,
+                    "CONTENT_LENGTH=%d", content_length);
+ else
+  result = snprintf(query_env, CGI_ENV_BUFFER_SIZE,
+                    "QUERY_STRING=%s", query_string != NULL ? query_string : "");
+ if (result < 0 || result >= CGI_ENV_BUFFER_SIZE)
+  return NULL;
+
+ while (environ[environment_count] != NULL)
+  environment_count++;
+ if (environment_count > (SIZE_MAX / sizeof(*cgi_env)) - 3)
+  return NULL;
+
+ cgi_env = malloc((environment_count + 3) * sizeof(*cgi_env));
+ if (cgi_env == NULL)
+  return NULL;
+
+ for (i = 0; i < environment_count; i++)
+ {
+  if (!is_cgi_environment_entry(environ[i]))
+   cgi_env[output_count++] = environ[i];
+ }
+ cgi_env[output_count++] = method_env;
+ cgi_env[output_count++] = is_post ? length_env : query_env;
+ cgi_env[output_count] = NULL;
+ return cgi_env;
+}
+
+static ssize_t read_retry(int fd, void *buffer, size_t length)
+{
+ ssize_t result;
+
+ do {
+  result = read(fd, buffer, length);
+ } while (result < 0 && errno == EINTR);
+ return result;
+}
+
+static ssize_t recv_retry(int fd, void *buffer, size_t length)
+{
+ ssize_t result;
+
+ do {
+  result = recv(fd, buffer, length, 0);
+ } while (result < 0 && errno == EINTR);
+ return result;
+}
+
+static int write_all_fd(int fd, const void *data, size_t length)
+{
+ const char *buffer = data;
+ size_t written = 0;
+
+ while (written < length)
+ {
+  ssize_t result = write(fd, buffer + written, length - written);
+  if (result < 0 && errno == EINTR)
+   continue;
+  if (result <= 0)
+   return -1;
+  written += (size_t)result;
+ }
+ return 0;
+}
+
+static int wait_for_child(pid_t pid, int *status)
+{
+ pid_t result;
+
+ do {
+  result = waitpid(pid, status, 0);
+ } while (result == -1 && errno == EINTR);
+ return result == pid ? 0 : -1;
+}
 
 int handle_cgi(int client, const char *path, const char *method,
                const char *query_string, int is_head, int content_length)
@@ -51,6 +168,13 @@ int execute_cgi(int client, const char *path,
  //进程pid和状态
  pid_t pid;
  int status;
+ int is_post = strcasecmp(method, "POST") == 0;
+ char method_env[CGI_ENV_BUFFER_SIZE];
+ char query_env[CGI_ENV_BUFFER_SIZE];
+ char length_env[CGI_ENV_BUFFER_SIZE];
+ char **cgi_env;
+ char *cgi_argv[2];
+ struct sigaction default_action;
 
  char c;
  int cgi_input_open = 0;
@@ -63,7 +187,7 @@ int execute_cgi(int client, const char *path,
 
  //GET/HEAD: accept_request已经读取并丢弃了header，这里不需要再读
  //POST: 使用上层传递的content_length
- if (strcasecmp(method, "POST") == 0)
+ if (is_post)
  {
   if (req_content_length < 0) {
    bad_request(client);
@@ -77,9 +201,26 @@ int execute_cgi(int client, const char *path,
   }
   content_length = req_content_length;
  }
+
+ cgi_env = build_cgi_environment(method, query_string, content_length,
+                                 method_env, query_env, length_env);
+ if (cgi_env == NULL)
+ {
+  log_error_message("CGI environment setup failed: %s", path);
+  cannot_execute(client);
+  close(client);
+  return 500;
+ }
+ cgi_argv[0] = (char *)path;
+ cgi_argv[1] = NULL;
+ memset(&default_action, 0, sizeof(default_action));
+ sigemptyset(&default_action.sa_mask);
+ default_action.sa_handler = SIG_DFL;
+
  //GET/HEAD: 不需要读取body
  //建立output管道
  if (pipe(cgi_output) < 0) {
+  free(cgi_env);
   log_error_message("CGI execution failed: %s", path);
   cannot_execute(client);
   close(client);
@@ -90,7 +231,23 @@ int execute_cgi(int client, const char *path,
  if (pipe(cgi_input) < 0) {
   close(cgi_output[0]);
   close(cgi_output[1]);
+  free(cgi_env);
   log_error_message("CGI execution failed: %s", path);
+  cannot_execute(client);
+  close(client);
+  return 500;
+ }
+ if (set_cloexec(cgi_output[0]) == -1 ||
+     set_cloexec(cgi_output[1]) == -1 ||
+     set_cloexec(cgi_input[0]) == -1 ||
+     set_cloexec(cgi_input[1]) == -1)
+ {
+  close(cgi_output[0]);
+  close(cgi_output[1]);
+  close(cgi_input[0]);
+  close(cgi_input[1]);
+  free(cgi_env);
+  log_error_message("CGI descriptor setup failed: %s", path);
   cannot_execute(client);
   close(client);
   return 500;
@@ -114,6 +271,7 @@ int execute_cgi(int client, const char *path,
   close(cgi_output[1]);
   close(cgi_input[0]);
   close(cgi_input[1]);
+  free(cgi_env);
   log_error_message("CGI execution failed: %s", path);
   cannot_execute(client);
   close(client);
@@ -121,93 +279,72 @@ int execute_cgi(int client, const char *path,
  }
  if (pid == 0)  /* child: CGI script */
  {
-  char meth_env[255];
-  char query_env[255];
-  char length_env[255];
-  int env_len;
-
   // cgi_output这个pipe的写端，重定向到标准输出流，
   // 即cgi脚本的控制台输出，会传递到cgi_output这个pipe中。
   // 后续父进程可以从cgi_output里读cgi脚本处理结果
-  dup2(cgi_output[1], 1);
+  if (dup2(cgi_output[1], STDOUT_FILENO) == -1)
+   _exit(126);
   // cgi_input这个pipe的读端，重定向到标准输入流。
   // 这意味着以后从标准输入读取数据时，实际上是从cgi_input这个pipe中读取数据。
   // 后续父进程向cgi_input里写入数据，等于向标准输入流写入数据
-  dup2(cgi_input[0], 0);
+  if (dup2(cgi_input[0], STDIN_FILENO) == -1)
+   _exit(126);
 
   //在子进程中，关闭另外2个pipe的端口
   close(cgi_output[0]);
   close(cgi_output[1]);
   close(cgi_input[0]);
   close(cgi_input[1]);
+  close(client);
 
-  //写入新的环境变量，用于后续cgi脚本使用
-  env_len = snprintf(meth_env, sizeof(meth_env), "REQUEST_METHOD=%s", method);
-  if (env_len < 0 || (size_t)env_len >= sizeof(meth_env))
-   exit(1);
-  putenv(meth_env);
-  if (strcasecmp(method, "GET") == 0 || strcasecmp(method, "HEAD") == 0) {
-   env_len = snprintf(query_env, sizeof(query_env), "QUERY_STRING=%s", query_string);
-   if (env_len < 0 || (size_t)env_len >= sizeof(query_env))
-    exit(1);
-   putenv(query_env);
-  }
-  else {   /* POST */
-   env_len = snprintf(length_env, sizeof(length_env), "CONTENT_LENGTH=%d", content_length);
-   if (env_len < 0 || (size_t)env_len >= sizeof(length_env))
-    exit(1);
-   putenv(length_env);
-  }
-  signal(SIGPIPE, SIG_DFL);
-  signal(SIGALRM, SIG_DFL);
+  if (sigaction(SIGPIPE, &default_action, NULL) == -1 ||
+      sigaction(SIGALRM, &default_action, NULL) == -1)
+   _exit(126);
   alarm(CGI_TIMEOUT_SECONDS);
   //替换后续代码的进程镜像，执行cgi脚本。
-  execl(path, path, NULL);
+  execve(path, cgi_argv, cgi_env);
   //int m = execl(path, path, NULL);
   //如果path有问题，例如将html网页改成可执行的，但是执行后m为-1
   //退出子进程，管道被破坏，但是父进程还在往里面写东西，触发Program received signal SIGPIPE, Broken pipe.
-  exit(127);
+  _exit(127);
  } else {    /* parent */
+
+      free(cgi_env);
 
 	  //关闭无用管道口
 	  close(cgi_output[1]);
 	  close(cgi_input[0]);
-	  if (strcasecmp(method, "POST") != 0) {
+	  if (!is_post) {
 	   close(cgi_input[1]);
 	   cgi_input_open = 0;
 	  }
-	  if (strcasecmp(method, "POST") == 0) {
-	   int remaining = content_length;
+	  if (is_post) {
+	   size_t remaining = (size_t)content_length;
 	   while (remaining > 0) {
-	    size_t chunk = (remaining < (int)sizeof(buf)) ? (size_t)remaining : sizeof(buf);
-	    ssize_t n = recv(client, buf, chunk, 0);
+	    size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
+	    ssize_t n = recv_retry(client, buf, chunk);
 	    if (n <= 0) {
 	     close(cgi_input[1]);
 	     cgi_input_open = 0;
 	     close(cgi_output[0]);
 	     kill(pid, SIGKILL);
-	     waitpid(pid, &status, 0);
+	     wait_for_child(pid, &status);
 	     bad_request(client);
 	     close(client);
 	     return 400;
 	    }
-	    size_t written = 0;
-	    while (written < (size_t)n) {
-	     ssize_t w = write(cgi_input[1], buf + written, (size_t)n - written);
-	     if (w <= 0) {
+	    if (write_all_fd(cgi_input[1], buf, (size_t)n) != 0) {
 	      close(cgi_input[1]);
 	      cgi_input_open = 0;
 	      close(cgi_output[0]);
 	      kill(pid, SIGKILL);
-	      waitpid(pid, &status, 0);
+	      wait_for_child(pid, &status);
 	      log_error_message("CGI execution failed: %s", path);
 	      cannot_execute(client);
 	      close(client);
 	      return 500;
-	     }
-	     written += (size_t)w;
 	    }
-	    remaining -= (int)n;
+	    remaining -= (size_t)n;
 	   }
 	  }
 	  if (cgi_input_open) {
@@ -218,10 +355,10 @@ int execute_cgi(int client, const char *path,
   //其实是cgi脚本运行后，向控制台打印的标准输出流，被重定向到cgi_output这个pipe里。
   //因此父进程是截获了cgi脚本的运行结果，转发给http客户端了。
 
-  if (read(cgi_output[0], &c, 1) <= 0)
+  if (read_retry(cgi_output[0], &c, 1) <= 0)
   {
    close(cgi_output[0]);
-   waitpid(pid, &status, 0);
+   wait_for_child(pid, &status);
    log_error_message("CGI execution failed: %s", path);
    cannot_execute(client);
    close(client);
@@ -257,9 +394,9 @@ int execute_cgi(int client, const char *path,
 	        (b0 == '\r' && b1 == '\n' && b2 == '\r' && b3 == '\n')) {
 	     break;
 	    }
-	   } while (read(cgi_output[0], &c, 1) > 0);
+	   } while (read_retry(cgi_output[0], &c, 1) > 0);
    // 读取并丢弃剩余的body
-   while (read(cgi_output[0], &c, 1) > 0)
+   while (read_retry(cgi_output[0], &c, 1) > 0)
     ;
   }
   else
@@ -268,7 +405,7 @@ int execute_cgi(int client, const char *path,
 	   do
 	    if (send_all(client, &c, 1) < 0)
 	     break;
-	   while (read(cgi_output[0], &c, 1) > 0);
+	   while (read_retry(cgi_output[0], &c, 1) > 0);
 	  }
 
 	  //完成操作后关闭管道
@@ -277,8 +414,8 @@ int execute_cgi(int client, const char *path,
 	   close(cgi_input[1]);
 
   //等待子进程返回
-  waitpid(pid, &status, 0);
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+  if (wait_for_child(pid, &status) != 0 ||
+      !WIFEXITED(status) || WEXITSTATUS(status) != 0)
   {
    log_error_message("CGI execution failed: %s", path);
    close(client);

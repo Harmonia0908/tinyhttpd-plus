@@ -4,6 +4,7 @@
 #include "response.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,24 @@ int send_all(int client, const void *data, size_t len)
  return 0;
 }
 
+int set_cloexec(int fd)
+{
+ int flags;
+
+ do {
+  flags = fcntl(fd, F_GETFD);
+ } while (flags == -1 && errno == EINTR);
+ if (flags == -1)
+  return -1;
+
+ while (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == -1)
+ {
+  if (errno != EINTR)
+   return -1;
+ }
+ return 0;
+}
+
 void error_die(const char *sc)
 {
  perror(sc);
@@ -44,18 +63,31 @@ int get_line(int sock, char *buf, int size)
 {
  int i = 0;
  char c = '\0';
- int n;
+ ssize_t n;
 
  while ((i < size - 1) && (c != '\n'))
  {
-  n = recv(sock, &c, 1, 0);
+  do {
+   n = recv(sock, &c, 1, 0);
+  } while (n < 0 && errno == EINTR);
   if (n > 0)
   {
    if (c == '\r')
    {
-     n = recv(sock, &c, 1, MSG_PEEK);
+     do {
+      n = recv(sock, &c, 1, MSG_PEEK);
+     } while (n < 0 && errno == EINTR);
      if ((n > 0) && (c == '\n'))
-      recv(sock, &c, 1, 0);
+     {
+      do {
+       n = recv(sock, &c, 1, 0);
+      } while (n < 0 && errno == EINTR);
+      if (n <= 0)
+      {
+       buf[i] = '\0';
+       return -1;
+      }
+     }
      else
       c = '\n';
    }
