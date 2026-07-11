@@ -273,6 +273,15 @@ int execute_cgi(int client, const char *path,
   close(cgi_input[1]);
   close(client);
 
+  {
+   long max_fd = sysconf(_SC_OPEN_MAX);
+   int fd;
+   if (max_fd < 0)
+    max_fd = 256;
+   for (fd = 3; fd < (int)max_fd; fd++)
+    close(fd);
+  }
+
   if (sigaction(SIGPIPE, &default_action, NULL) == -1 ||
       sigaction(SIGALRM, &default_action, NULL) == -1)
    _exit(126);
