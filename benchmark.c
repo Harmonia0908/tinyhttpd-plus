@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -15,14 +17,51 @@
 struct thread_data {
  int thread_id;
  int num_requests;
- char *host;
+ const char *host;
  int port;
- char *path;
+ const char *path;
  int *success_count;
  int *fail_count;
  double *total_time;
  pthread_mutex_t *mutex;
 };
+
+static int parse_int(const char *value, int minimum, int maximum, int *result)
+{
+ char *end;
+ long parsed;
+
+ errno = 0;
+ parsed = strtol(value, &end, 10);
+ if (value == end || *end != '\0' || errno == ERANGE ||
+     parsed < minimum || parsed > maximum)
+  return -1;
+ *result = (int)parsed;
+ return 0;
+}
+
+static double elapsed_seconds(const struct timeval *start,
+                              const struct timeval *end)
+{
+ return (double)(end->tv_sec - start->tv_sec) +
+        (double)(end->tv_usec - start->tv_usec) / 1000000.0;
+}
+
+static int send_complete(int socket_fd, const char *buffer, size_t length)
+{
+ size_t sent = 0;
+
+ while (sent < length)
+ {
+  ssize_t result = send(socket_fd, buffer + sent, length - sent, 0);
+  if (result < 0 && errno == EINTR)
+   continue;
+  if (result <= 0)
+   return -1;
+  sent += (size_t)result;
+ }
+ return 0;
+}
 
 void *send_request(void *arg)
 {
@@ -31,7 +70,8 @@ void *send_request(void *arg)
  struct sockaddr_in server;
  char request[1024];
  char response[1024];
- int bytes_received;
+ ssize_t bytes_received;
+ int request_length;
  struct timeval start, end;
  double elapsed;
 
@@ -44,14 +84,21 @@ void *send_request(void *arg)
    continue;
   }
 
+  memset(&server, 0, sizeof(server));
   server.sin_family = AF_INET;
-  server.sin_port = htons(data->port);
-  inet_pton(AF_INET, data->host, &server.sin_addr);
+  server.sin_port = htons((uint16_t)data->port);
+  if (inet_pton(AF_INET, data->host, &server.sin_addr) != 1) {
+   pthread_mutex_lock(data->mutex);
+   (*data->fail_count)++;
+   pthread_mutex_unlock(data->mutex);
+   close(sock);
+   continue;
+  }
 
   gettimeofday(&start, NULL);
   if (connect(sock, (struct sockaddr *)&server, sizeof(server)) < 0) {
    gettimeofday(&end, NULL);
-   elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1000000.0;
+   elapsed = elapsed_seconds(&start, &end);
    
    pthread_mutex_lock(data->mutex);
    (*data->fail_count)++;
@@ -62,12 +109,21 @@ void *send_request(void *arg)
    continue;
   }
 
-  sprintf(request, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", 
-          data->path, data->host);
+  request_length = snprintf(request, sizeof(request),
+                            "GET %s HTTP/1.1\r\nHost: %s\r\n"
+                            "Connection: close\r\n\r\n",
+                            data->path, data->host);
+  if (request_length < 0 || (size_t)request_length >= sizeof(request)) {
+   pthread_mutex_lock(data->mutex);
+   (*data->fail_count)++;
+   pthread_mutex_unlock(data->mutex);
+   close(sock);
+   continue;
+  }
   
-  if (send(sock, request, strlen(request), 0) < 0) {
+  if (send_complete(sock, request, strlen(request)) != 0) {
    gettimeofday(&end, NULL);
-   elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1000000.0;
+   elapsed = elapsed_seconds(&start, &end);
    
    pthread_mutex_lock(data->mutex);
    (*data->fail_count)++;
@@ -80,7 +136,7 @@ void *send_request(void *arg)
 
   bytes_received = recv(sock, response, sizeof(response) - 1, 0);
   gettimeofday(&end, NULL);
-  elapsed = (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1000000.0;
+  elapsed = elapsed_seconds(&start, &end);
 
   if (bytes_received > 0) {
    response[bytes_received] = '\0';
@@ -116,14 +172,17 @@ int main(int argc, char *argv[])
   return 1;
  }
 
- char *host = argv[1];
- int port = atoi(argv[2]);
- char *path = argv[3];
- int num_threads = atoi(argv[4]);
- int requests_per_thread = atoi(argv[5]);
+ const char *host = argv[1];
+ int port;
+ const char *path = argv[3];
+ int num_threads;
+ int requests_per_thread;
 
- if (num_threads > MAX_THREADS) {
-  printf("Error: Maximum threads is %d\n", MAX_THREADS);
+ if (parse_int(argv[2], 1, 65535, &port) != 0 ||
+     parse_int(argv[4], 1, MAX_THREADS, &num_threads) != 0 ||
+     parse_int(argv[5], 1, MAX_REQUESTS, &requests_per_thread) != 0) {
+  printf("Error: port must be 1-65535, threads 1-%d, and requests 1-%d\n",
+         MAX_THREADS, MAX_REQUESTS);
   return 1;
  }
 
@@ -134,6 +193,7 @@ int main(int argc, char *argv[])
  pthread_mutex_t mutex;
  pthread_t threads[MAX_THREADS];
  struct thread_data thread_data_array[MAX_THREADS];
+ int created_threads = 0;
 
  pthread_mutex_init(&mutex, NULL);
 
@@ -161,17 +221,22 @@ int main(int argc, char *argv[])
 
   if (pthread_create(&threads[i], NULL, send_request, &thread_data_array[i]) != 0) {
    printf("Error creating thread %d\n", i);
-   return 1;
+   break;
   }
+  created_threads++;
  }
 
- for (int i = 0; i < num_threads; i++) {
+ for (int i = 0; i < created_threads; i++) {
   pthread_join(threads[i], NULL);
  }
 
+ if (created_threads != num_threads) {
+  pthread_mutex_destroy(&mutex);
+  return 1;
+ }
+
  gettimeofday(&test_end, NULL);
- double test_elapsed = (test_end.tv_sec - test_start.tv_sec) + 
-                      (test_end.tv_usec - test_start.tv_usec) / 1000000.0;
+ double test_elapsed = elapsed_seconds(&test_start, &test_end);
 
  pthread_mutex_destroy(&mutex);
 

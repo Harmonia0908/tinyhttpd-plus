@@ -5,7 +5,9 @@ set -e
 PORT="${PORT:-18086}"
 SERVER_PID=""
 CONFIG_FILE="config/server.conf"
-CONFIG_BACKUP="config/server.conf.mimetest.bak"
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tinyhttpd-mime.XXXXXX")
+CONFIG_BACKUP="$TMP_DIR/server.conf.bak"
+SERVER_LOG="$TMP_DIR/server.log"
 HAD_CONFIG_DIR=0
 HAD_CONFIG_FILE=0
 TEST_FILES="
@@ -30,6 +32,7 @@ cleanup() {
     if [ "$HAD_CONFIG_DIR" -eq 0 ]; then
         rmdir config 2>/dev/null || true
     fi
+    rm -rf "$TMP_DIR"
 }
 
 fail() {
@@ -76,7 +79,10 @@ trap cleanup EXIT
 require_command curl
 require_command grep
 
-make clean && make
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    make clean
+    make
+fi
 
 if [ -d config ]; then
     HAD_CONFIG_DIR=1
@@ -101,10 +107,10 @@ printf 'console.log("mime");\n' > htdocs/mime_test.js
 printf '\211PNG\r\n\032\n' > htdocs/mime_test.png
 printf 'unknown\n' > htdocs/mime_test.unknown
 
-./httpd "$PORT" > server.log 2>&1 &
+./httpd "$PORT" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 wait_for_server || {
-    cat server.log
+    cat "$SERVER_LOG"
     fail "server did not start"
 }
 

@@ -3,8 +3,10 @@
 set -e
 
 CONFIG_FILE="config/server.conf"
-CONFIG_BACKUP="config/server.conf.configtest.bak"
-CONFIG_ROOT="tests/config_root"
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tinyhttpd-config.XXXXXX")
+CONFIG_BACKUP="$TMP_DIR/server.conf.bak"
+CONFIG_ROOT="$TMP_DIR/config_root"
+SERVER_LOG="$TMP_DIR/server.log"
 SERVER_PID=""
 HAD_CONFIG_DIR=0
 HAD_CONFIG_FILE=0
@@ -20,6 +22,7 @@ cleanup() {
     if [ "$HAD_CONFIG_DIR" -eq 0 ]; then
         rmdir config 2>/dev/null || true
     fi
+    rm -rf "$TMP_DIR"
 }
 
 fail() {
@@ -69,10 +72,10 @@ start_server() {
     local port="$1"
     shift
 
-    ./httpd "$@" > server.log 2>&1 &
+    ./httpd "$@" > "$SERVER_LOG" 2>&1 &
     SERVER_PID=$!
     wait_for_server "$port" || {
-        cat server.log
+        cat "$SERVER_LOG"
         fail "server did not start on port $port"
     }
 }
@@ -100,7 +103,10 @@ trap cleanup EXIT
 require_command curl
 require_command grep
 
-make clean && make
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    make clean
+    make
+fi
 backup_config
 
 rm -f "$CONFIG_FILE"
@@ -126,7 +132,7 @@ printf 'CONFIG-ROOT-OK\n' > "$CONFIG_ROOT/index.html"
 write_config <<EOF
 port=18084
 thread_num=2
-root_dir=./tests/config_root
+root_dir=$CONFIG_ROOT
 enable_access_log=1
 enable_error_log=1
 EOF

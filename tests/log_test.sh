@@ -6,7 +6,9 @@ PORT="${PORT:-18082}"
 SERVER_PID=""
 FAIL_CGI="htdocs/log_fail.cgi"
 CONFIG_FILE="config/server.conf"
-CONFIG_BACKUP="config/server.conf.logtest.bak"
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tinyhttpd-log.XXXXXX")
+CONFIG_BACKUP="$TMP_DIR/server.conf.bak"
+SERVER_LOG="$TMP_DIR/server.log"
 HAD_CONFIG_DIR=0
 HAD_CONFIG_FILE=0
 
@@ -24,6 +26,7 @@ cleanup() {
     if [ "$HAD_CONFIG_DIR" -eq 0 ]; then
         rmdir config 2>/dev/null || true
     fi
+    rm -rf "$TMP_DIR"
 }
 
 fail() {
@@ -63,7 +66,10 @@ trap cleanup EXIT
 require_command curl
 require_command grep
 
-make clean && make
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    make clean
+    make
+fi
 
 if [ -d config ]; then
     HAD_CONFIG_DIR=1
@@ -91,15 +97,15 @@ printf '%s\n' \
     > "$FAIL_CGI"
 chmod +x "$FAIL_CGI"
 
-./httpd "$PORT" > server.log 2>&1 &
+./httpd "$PORT" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
 wait_for_server || fail "server did not start"
 
-curl --noproxy '*' -s -i -m 5 "http://127.0.0.1:$PORT/" >/tmp/tinyhttpd-log-200.out
-curl --noproxy '*' -s -i -m 5 "http://127.0.0.1:$PORT/not-found-for-log-test.html" >/tmp/tinyhttpd-log-404.out
-curl --noproxy '*' -s -i -m 5 "http://127.0.0.1:$PORT/date.cgi" >/tmp/tinyhttpd-log-cgi.out
-curl --noproxy '*' -s -i -m 8 "http://127.0.0.1:$PORT/log_fail.cgi" >/tmp/tinyhttpd-log-cgi-fail.out
+curl --noproxy '*' -s -i -m 5 "http://127.0.0.1:$PORT/" >"$TMP_DIR/200.out"
+curl --noproxy '*' -s -i -m 5 "http://127.0.0.1:$PORT/not-found-for-log-test.html" >"$TMP_DIR/404.out"
+curl --noproxy '*' -s -i -m 5 "http://127.0.0.1:$PORT/date.cgi" >"$TMP_DIR/cgi.out"
+curl --noproxy '*' -s -i -m 8 "http://127.0.0.1:$PORT/log_fail.cgi" >"$TMP_DIR/cgi-fail.out"
 
 test -f logs/access.log || fail "logs/access.log was not created"
 test -f logs/error.log || fail "logs/error.log was not created"

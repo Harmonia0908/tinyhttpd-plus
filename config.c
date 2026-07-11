@@ -137,7 +137,7 @@ int load_config(const char *path, server_config_t *cfg)
   if (strcmp(key, "port") == 0)
   {
    if (parse_long(value, 1, 65535, &parsed) == 0)
-    cfg->port = (u_short)parsed;
+    cfg->port = (uint16_t)parsed;
    else
    {
     cfg->port = DEFAULT_PORT;

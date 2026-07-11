@@ -5,6 +5,7 @@ benchmark
 *.o
 *.out
 *.dSYM
+build/
 
 # logs
 *.log

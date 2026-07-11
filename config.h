@@ -1,13 +1,13 @@
 #ifndef TINYHTTPD_CONFIG_H
 #define TINYHTTPD_CONFIG_H
 
-#include <sys/types.h>
+#include <stdint.h>
 
 #define CONFIG_PATH "config/server.conf"
 #define MAX_ROOT_DIR_LEN 512
 
 typedef struct {
- u_short port;
+ uint16_t port;
  int thread_num;
  char root_dir[MAX_ROOT_DIR_LEN];
  int enable_access_log;

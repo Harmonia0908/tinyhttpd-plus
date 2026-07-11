@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install test tools
+        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd
+      - name: Build and test
+        run: make test
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install test tools
+        run: sudo apt-get update && sudo apt-get install -y netcat-openbsd
+      - name: Run AddressSanitizer and UndefinedBehaviorSanitizer
+        run: make sanitizer-test

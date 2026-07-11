@@ -1,10 +1,10 @@
 #ifndef TINYHTTPD_SERVER_H
 #define TINYHTTPD_SERVER_H
 
-#include <sys/types.h>
+#include <stdint.h>
 
 void handle_client(int client);
-int startup(u_short *port);
-int server_run(u_short port);
+int startup(uint16_t *port);
+int server_run(uint16_t port);
 
 #endif

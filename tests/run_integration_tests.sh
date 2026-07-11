@@ -14,13 +14,15 @@ NC="\033[0m" # No Color
 # 端口设置（支持环境变量 PORT）
 PORT="${PORT:-18080}"
 SERVER_PID=""
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tinyhttpd-integration.XXXXXX")
+SERVER_LOG="$TMP_DIR/server.log"
 TEST_BINARY_FILE="htdocs/test_binary.bin"
 TEST_STATIC_FILE="htdocs/test_static.txt"
 TEST_CRLF_CGI="htdocs/head_crlf.cgi"
 TEST_SLEEP_CGI="htdocs/sleep.cgi"
-TEST_OUTSIDE_FILE="tests/outside_secret.txt"
+TEST_OUTSIDE_FILE="$TMP_DIR/outside_secret.txt"
 TEST_SYMLINK="htdocs/outside_link.txt"
-TEST_BINARY_OUT="tests/test_binary.out"
+TEST_BINARY_OUT="$TMP_DIR/test_binary.out"
 
 echo -e "${YELLOW}=== Tinyhttpd 集成测试 ===${NC}"
 echo -e "测试端口: $PORT"
@@ -58,15 +60,6 @@ is_port_listening() {
     fi
 }
 
-# 杀死指定端口的进程
-kill_port_process() {
-    local port=$1
-    # 尝试使用 lsof
-    if command -v lsof > /dev/null 2>&1; then
-        lsof -i :$port | grep LISTEN | awk '{print $2}' | xargs kill -9 2>/dev/null || true
-    fi
-}
-
 cleanup() {
     if [ -n "$SERVER_PID" ]; then
         kill "$SERVER_PID" 2>/dev/null || true
@@ -75,6 +68,7 @@ cleanup() {
     rm -f "$TEST_BINARY_FILE" "$TEST_STATIC_FILE" "$TEST_CRLF_CGI" \
           "$TEST_SLEEP_CGI" "$TEST_OUTSIDE_FILE" "$TEST_SYMLINK" \
           "$TEST_BINARY_OUT"
+    rm -rf "$TMP_DIR"
 }
 
 trap cleanup EXIT
@@ -85,7 +79,7 @@ create_test_fixtures() {
     perl -e 'print "ABC\0DEF\0GHI"' > "$TEST_BINARY_FILE"
     printf 'STATIC-HEAD-BODY\n' > "$TEST_STATIC_FILE"
     printf 'outside secret\n' > "$TEST_OUTSIDE_FILE"
-    ln -sf "../$TEST_OUTSIDE_FILE" "$TEST_SYMLINK"
+    ln -sf "$TEST_OUTSIDE_FILE" "$TEST_SYMLINK"
 
     printf '%s\n' \
         '#!/usr/bin/perl' \
@@ -103,27 +97,37 @@ create_test_fixtures() {
 
 # 编译项目
 echo -e "${YELLOW}1. 编译项目${NC}"
-make clean && make
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    make clean
+    make
+fi
 
 create_test_fixtures
 
 # 启动服务器
 echo -e "${YELLOW}2. 启动服务器${NC}"
 
-# 杀死可能存在的进程
-kill_port_process $PORT
-sleep 1
+if is_port_listening "$PORT"; then
+    echo -e "${RED}端口 $PORT 已被其他进程占用${NC}"
+    exit 1
+fi
 
 # 后台启动服务器
-./httpd $PORT > server.log 2>&1 &
+./httpd "$PORT" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
-sleep 2
+
+for _ in $(seq 1 30); do
+    if is_port_listening "$PORT"; then
+        break
+    fi
+    sleep 0.1
+done
 
 # 检查服务器是否启动
 echo -e "${YELLOW}3. 检查服务器状态${NC}"
 if ! is_port_listening $PORT; then
     echo -e "${RED}服务器启动失败${NC}"
-    cat server.log
+    cat "$SERVER_LOG"
     exit 1
 fi
 echo -e "${GREEN}服务器启动成功，PID: $SERVER_PID${NC}"
@@ -383,13 +387,8 @@ SERVER_PID=""
 # 检查是否成功清理
 sleep 1
 if is_port_listening $PORT; then
-    echo -e "${RED}⚠️ 警告: 端口 $PORT 仍被占用，尝试清理...${NC}"
-    kill_port_process $PORT
-    sleep 1
-    if is_port_listening $PORT; then
-        echo -e "${RED}❌ 无法清理端口 $PORT${NC}"
-        exit 1
-    fi
+    echo -e "${RED}❌ 测试 server 退出后端口 $PORT 仍被占用${NC}"
+    exit 1
 fi
 
 echo -e "${GREEN}✅ 所有测试通过！${NC}"

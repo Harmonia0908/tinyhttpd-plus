@@ -5,11 +5,26 @@
  * University of Texas at Arlington
  */
 
+#include <errno.h>
+#include <stdint.h>
 #include <stdlib.h>
-#include <sys/types.h>
 
 #include "config.h"
 #include "server.h"
+
+static int parse_port(const char *value, uint16_t *port)
+{
+ char *end;
+ long parsed;
+
+ errno = 0;
+ parsed = strtol(value, &end, 10);
+ if (value == end || *end != '\0' || errno == ERANGE ||
+     parsed <= 0 || parsed > 65535)
+  return -1;
+ *port = (uint16_t)parsed;
+ return 0;
+}
 
 int main(int argc, char *argv[])
 {
@@ -19,11 +34,11 @@ int main(int argc, char *argv[])
 
  // 解析命令行参数；保留命令行端口覆盖能力，便于测试和临时启动。
  if (argc > 1) {
-  int port_arg = atoi(argv[1]);
-  if (port_arg <= 0 || port_arg > 65535) {
+  uint16_t port_arg;
+  if (parse_port(argv[1], &port_arg) != 0) {
    cfg.port = 8080;
   } else {
-   cfg.port = (u_short)port_arg;
+   cfg.port = port_arg;
   }
  }
 

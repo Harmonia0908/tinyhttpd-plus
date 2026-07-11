@@ -31,7 +31,7 @@ void handle_client(int client) {
     accept_request(client);
 }
 
-int startup(u_short *port)
+int startup(uint16_t *port)
 {
  int httpd = 0;
  struct sockaddr_in name;
@@ -69,7 +69,7 @@ int startup(u_short *port)
  return(httpd);
 }
 
-int server_run(u_short port)
+int server_run(uint16_t port)
 {
  int server_sock = -1;
  int client_sock = -1;
