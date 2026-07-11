@@ -1,4 +1,5 @@
 #include "config.h"
+#include "threadpool.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -146,7 +147,7 @@ int load_config(const char *path, server_config_t *cfg)
   }
   else if (strcmp(key, "thread_num") == 0)
   {
-   if (parse_long(value, 1, 1024, &parsed) == 0)
+   if (parse_long(value, 1, THREADPOOL_MAX_THREADS, &parsed) == 0)
     cfg->thread_num = (int)parsed;
    else
    {

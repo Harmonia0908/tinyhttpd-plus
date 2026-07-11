@@ -137,7 +137,7 @@ echo "PASS: custom root_dir works"
 
 write_config <<EOF
 port=invalid
-thread_num=0
+thread_num=101
 root_dir=
 enable_access_log=maybe
 enable_error_log=2

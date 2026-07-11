@@ -77,6 +77,8 @@ int server_run(u_short port)
  struct sockaddr_in client_name;
  socklen_t client_name_len = sizeof(client_name);
 
+ running = 1;
+
  signal(SIGPIPE, SIG_IGN);
  {
   struct sigaction sa;
@@ -90,7 +92,12 @@ int server_run(u_short port)
  server_sock = startup(&port);
  printf("httpd running on port %d\n", port);
 
- threadpool_init(cfg->thread_num, 1000, handle_client);
+ if (threadpool_init(cfg->thread_num, DEFAULT_QUEUE_SIZE, handle_client) != 0)
+ {
+  fprintf(stderr, "failed to initialize thread pool\n");
+  close(server_sock);
+  return 1;
+ }
 
  while (running)
  {
