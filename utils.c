@@ -16,6 +16,84 @@
 
 static pthread_mutex_t fork_fd_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static void fork_fd_lock(void)
+{
+ pthread_mutex_lock(&fork_fd_mutex);
+}
+
+static void fork_fd_unlock(void)
+{
+ pthread_mutex_unlock(&fork_fd_mutex);
+}
+
+int accept_cloexec_blocking(int listener, struct sockaddr *address,
+                            socklen_t *address_length)
+{
+ int client;
+
+ fork_fd_lock();
+ client = accept(listener, address, address_length);
+ if (client != -1 &&
+     (set_cloexec(client) == -1 || set_blocking(client) == -1))
+ {
+  int saved_errno = errno;
+  close(client);
+  client = -1;
+  errno = saved_errno;
+ }
+ fork_fd_unlock();
+ return client;
+}
+
+pid_t fork_with_cloexec_pipes(int output_pipe[2], int input_pipe[2])
+{
+ pid_t pid;
+
+ fork_fd_lock();
+ if (pipe(output_pipe) == -1)
+ {
+  fork_fd_unlock();
+  return -1;
+ }
+ if (pipe(input_pipe) == -1)
+ {
+  int saved_errno = errno;
+  close(output_pipe[0]);
+  close(output_pipe[1]);
+  fork_fd_unlock();
+  errno = saved_errno;
+  return -1;
+ }
+ if (set_cloexec(output_pipe[0]) == -1 ||
+     set_cloexec(output_pipe[1]) == -1 ||
+     set_cloexec(input_pipe[0]) == -1 ||
+     set_cloexec(input_pipe[1]) == -1)
+ {
+  int saved_errno = errno;
+  close(output_pipe[0]);
+  close(output_pipe[1]);
+  close(input_pipe[0]);
+  close(input_pipe[1]);
+  fork_fd_unlock();
+  errno = saved_errno;
+  return -1;
+ }
+
+ pid = fork();
+ if (pid != 0)
+  fork_fd_unlock();
+ if (pid == -1)
+ {
+  int saved_errno = errno;
+  close(output_pipe[0]);
+  close(output_pipe[1]);
+  close(input_pipe[0]);
+  close(input_pipe[1]);
+  errno = saved_errno;
+ }
+ return pid;
+}
+
 int open_cloexec(const char *path, int flags, mode_t mode)
 {
  int fd;
@@ -107,16 +185,6 @@ int set_blocking(int fd)
    return -1;
  }
  return 0;
-}
-
-void fork_fd_lock(void)
-{
- pthread_mutex_lock(&fork_fd_mutex);
-}
-
-void fork_fd_unlock(void)
-{
- pthread_mutex_unlock(&fork_fd_mutex);
 }
 
 void error_die(const char *sc)

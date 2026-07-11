@@ -129,14 +129,10 @@ int server_run(uint16_t port)
   }
 
   client_name_len = sizeof(client_name);
-  fork_fd_lock();
-  client_sock = accept(server_sock,
-                       (struct sockaddr *)&client_name,
+  client_sock = accept_cloexec_blocking(
+                       server_sock, (struct sockaddr *)&client_name,
                        &client_name_len);
   if (client_sock == -1) {
-   int saved_errno = errno;
-   fork_fd_unlock();
-   errno = saved_errno;
    if (errno == EINTR) {
     if (!running)
      break;
@@ -147,16 +143,6 @@ int server_run(uint16_t port)
    }
    error_die("accept");
   }
-
-  if (set_cloexec(client_sock) == -1 || set_blocking(client_sock) == -1) {
-   int saved_errno = errno;
-   fork_fd_unlock();
-   errno = saved_errno;
-   perror("fcntl(FD_CLOEXEC)");
-   close(client_sock);
-   continue;
-  }
-  fork_fd_unlock();
 
   if (threadpool_submit(client_sock) != 0) {
    close(client_sock);

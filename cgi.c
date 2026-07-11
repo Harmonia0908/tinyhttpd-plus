@@ -231,45 +231,6 @@ int execute_cgi(int client, const char *path,
  default_action.sa_handler = SIG_DFL;
 
  //GET/HEAD: 不需要读取body
- fork_fd_lock();
- //建立output管道
- if (pipe(cgi_output) < 0) {
-  fork_fd_unlock();
-  free(cgi_env);
-  log_error_message("CGI execution failed: %s", path);
-  cannot_execute(client);
-  close(client);
-  return 500;
- }
-
- //建立input管道
- if (pipe(cgi_input) < 0) {
-  close(cgi_output[0]);
-  close(cgi_output[1]);
-  fork_fd_unlock();
-  free(cgi_env);
-  log_error_message("CGI execution failed: %s", path);
-  cannot_execute(client);
-  close(client);
-  return 500;
- }
- if (set_cloexec(cgi_output[0]) == -1 ||
-     set_cloexec(cgi_output[1]) == -1 ||
-     set_cloexec(cgi_input[0]) == -1 ||
-     set_cloexec(cgi_input[1]) == -1)
- {
-  close(cgi_output[0]);
-  close(cgi_output[1]);
-  close(cgi_input[0]);
-  close(cgi_input[1]);
-  fork_fd_unlock();
-  free(cgi_env);
-  log_error_message("CGI descriptor setup failed: %s", path);
-  cannot_execute(client);
-  close(client);
-  return 500;
- }
- cgi_input_open = 1;
  //       fork后管道都复制了一份，都是一样的
  //       子进程关闭2个无用的端口，避免浪费
  //       ×<------------------------->1    output
@@ -283,20 +244,15 @@ int execute_cgi(int client, const char *path,
 
  //fork进程，子进程用于执行CGI
  //父进程用于收数据以及发送子进程处理的回复数据
- if ( (pid = fork()) < 0 ) {
-  close(cgi_output[0]);
-  close(cgi_output[1]);
-  close(cgi_input[0]);
-  close(cgi_input[1]);
-  fork_fd_unlock();
+ pid = fork_with_cloexec_pipes(cgi_output, cgi_input);
+ if (pid < 0) {
   free(cgi_env);
   log_error_message("CGI execution failed: %s", path);
   cannot_execute(client);
   close(client);
   return 500;
  }
- if (pid != 0)
-  fork_fd_unlock();
+ cgi_input_open = 1;
  if (pid == 0)  /* child: CGI script */
  {
   // cgi_output这个pipe的写端，重定向到标准输出流，

@@ -5,22 +5,19 @@
 
 int main(void)
 {
- const char *query = getenv("QUERY_STRING");
- char *end = NULL;
- long fd;
- int open_after_exec;
+ int fd;
 
- if (query == NULL)
-  return EXIT_FAILURE;
+ printf("Content-Type: text/plain\r\n\r\n");
+ for (fd = 3; fd < 256; fd++)
+ {
+  errno = 0;
+  if (fcntl(fd, F_GETFD) != -1 || errno != EBADF)
+  {
+   printf("LEAKED_FD=%d\n", fd);
+   return EXIT_FAILURE;
+  }
+ }
 
- errno = 0;
- fd = strtol(query, &end, 10);
- if (errno != 0 || end == query || *end != '\0' || fd < 0)
-  return EXIT_FAILURE;
-
- errno = 0;
- open_after_exec = fcntl((int)fd, F_GETFD);
- printf("Content-Type: text/plain\r\n\r\n%s\n",
-        open_after_exec == -1 && errno == EBADF ? "CLOSED" : "LEAKED");
+ puts("NO_EXTRA_FDS");
  return EXIT_SUCCESS;
 }

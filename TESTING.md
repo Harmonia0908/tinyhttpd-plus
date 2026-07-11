@@ -23,7 +23,7 @@ Expected result: `httpd`, `client`, and `benchmark` are built with C17 and the c
 make unit-test
 ```
 
-These tests use `socketpair()` and local processes rather than TCP ports. They cover request/header boundaries, CGI descriptor inheritance, and thread-pool lifecycle behavior.
+These tests use `socketpair()` and local processes rather than TCP ports. They cover request/header boundaries, concurrent CGI descriptor inheritance, and thread-pool lifecycle behavior.
 
 ## Full Automated Integration Test
 
@@ -56,7 +56,7 @@ Current coverage includes:
 - CGI timeout handling releases workers instead of blocking the pool permanently.
 - SIGTERM during a busy CGI worker drains the pool and releases the listening port.
 - Overlong URI, missing URI, duplicate `Content-Length`, and maximum body-length boundaries.
-- CGI children do not inherit client sockets across `execve()`.
+- Sixteen synchronized concurrent CGI children do not inherit unrelated descriptors across `execve()`.
 - Thread-pool initialization failures, task draining, processed count, and repeated shutdown.
 - Configuration, access/error logging, and MIME mappings.
 
