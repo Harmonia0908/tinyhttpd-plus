@@ -12,6 +12,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -304,6 +305,10 @@ int execute_cgi(int client, const char *path,
 	   cgi_input_open = 0;
 	  }
 	  if (is_post) {
+	   struct timeval tv;
+	   tv.tv_sec = 1;
+	   tv.tv_usec = 0;
+	   setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 	   size_t remaining = (size_t)content_length;
 	   while (remaining > 0) {
 	    size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
