@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,6 +43,8 @@ int startup(uint16_t *port)
   error_die("socket");
  if (set_cloexec(httpd) == -1)
   error_die("fcntl(FD_CLOEXEC)");
+ if (set_nonblocking(httpd) == -1)
+  error_die("fcntl(O_NONBLOCK)");
  
  // 设置 SO_REUSEADDR，避免端口占用问题
  if (setsockopt(httpd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
@@ -76,6 +79,7 @@ int server_run(uint16_t port)
  const server_config_t *cfg = get_server_config();
  struct sockaddr_in client_name;
  socklen_t client_name_len = sizeof(client_name);
+ struct pollfd listener;
 
  running = 1;
 
@@ -99,12 +103,40 @@ int server_run(uint16_t port)
   return 1;
  }
 
+ listener.fd = server_sock;
+ listener.events = POLLIN;
+
  while (running)
  {
+  int poll_result;
+
+  listener.revents = 0;
+  poll_result = poll(&listener, 1, 250);
+  if (poll_result == -1)
+  {
+   if (errno == EINTR)
+    continue;
+   perror("poll");
+   break;
+  }
+  if (poll_result == 0)
+   continue;
+  if ((listener.revents & POLLIN) == 0)
+  {
+   if (listener.revents & (POLLERR | POLLHUP | POLLNVAL))
+    break;
+   continue;
+  }
+
+  client_name_len = sizeof(client_name);
+  fork_fd_lock();
   client_sock = accept(server_sock,
                        (struct sockaddr *)&client_name,
                        &client_name_len);
   if (client_sock == -1) {
+   int saved_errno = errno;
+   fork_fd_unlock();
+   errno = saved_errno;
    if (errno == EINTR) {
     if (!running)
      break;
@@ -116,11 +148,15 @@ int server_run(uint16_t port)
    error_die("accept");
   }
 
-  if (set_cloexec(client_sock) == -1) {
+  if (set_cloexec(client_sock) == -1 || set_blocking(client_sock) == -1) {
+   int saved_errno = errno;
+   fork_fd_unlock();
+   errno = saved_errno;
    perror("fcntl(FD_CLOEXEC)");
    close(client_sock);
    continue;
   }
+  fork_fd_unlock();
 
   if (threadpool_submit(client_sock) != 0) {
    close(client_sock);

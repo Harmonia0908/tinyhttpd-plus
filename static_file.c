@@ -4,6 +4,7 @@
 #include "utils.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <unistd.h>
 
@@ -27,8 +28,19 @@ void cat(int client, FILE *resource)
 int serve_file(int client, const char *filename, int is_head, off_t file_size)
 {
  FILE *resource = NULL;
+ int resource_fd;
 
- resource = fopen(filename, "r");
+ resource_fd = open_cloexec(filename, O_RDONLY, 0);
+ if (resource_fd != -1)
+ {
+  resource = fdopen(resource_fd, "r");
+  if (resource == NULL)
+  {
+   int saved_errno = errno;
+   close(resource_fd);
+   errno = saved_errno;
+  }
+ }
  if (resource == NULL) {
   int saved_errno = errno;
   if (saved_errno == EACCES)

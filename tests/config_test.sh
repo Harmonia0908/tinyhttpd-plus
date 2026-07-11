@@ -7,9 +7,11 @@ TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tinyhttpd-config.XXXXXX")
 CONFIG_BACKUP="$TMP_DIR/server.conf.bak"
 CONFIG_ROOT="$TMP_DIR/config_root"
 SERVER_LOG="$TMP_DIR/server.log"
+LOG_BACKUP="$TMP_DIR/logs.bak"
 SERVER_PID=""
 HAD_CONFIG_DIR=0
 HAD_CONFIG_FILE=0
+HAD_LOG_PATH=0
 
 cleanup() {
     stop_server
@@ -21,6 +23,10 @@ cleanup() {
     fi
     if [ "$HAD_CONFIG_DIR" -eq 0 ]; then
         rmdir config 2>/dev/null || true
+    fi
+    rm -rf logs
+    if [ "$HAD_LOG_PATH" -eq 1 ]; then
+        mv "$LOG_BACKUP" logs
     fi
     rm -rf "$TMP_DIR"
 }
@@ -44,6 +50,13 @@ backup_config() {
     if [ -f "$CONFIG_FILE" ]; then
         HAD_CONFIG_FILE=1
         cp "$CONFIG_FILE" "$CONFIG_BACKUP"
+    fi
+}
+
+backup_logs() {
+    if [ -e logs ] || [ -L logs ]; then
+        HAD_LOG_PATH=1
+        mv logs "$LOG_BACKUP"
     fi
 }
 
@@ -100,6 +113,9 @@ write_config() {
 
 trap cleanup EXIT
 
+backup_config
+backup_logs
+
 require_command curl
 require_command grep
 
@@ -107,7 +123,6 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     make clean
     make
 fi
-backup_config
 
 rm -f "$CONFIG_FILE"
 start_server 8080

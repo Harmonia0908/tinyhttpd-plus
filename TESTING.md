@@ -54,6 +54,7 @@ Current coverage includes:
 - Single overlong request/header lines return `400`.
 - Total headers over 8 KiB return `413` for `GET`, `HEAD`, `POST`, and `OPTIONS`.
 - CGI timeout handling releases workers instead of blocking the pool permanently.
+- SIGTERM during a busy CGI worker drains the pool and releases the listening port.
 - Overlong URI, missing URI, duplicate `Content-Length`, and maximum body-length boundaries.
 - CGI children do not inherit client sockets across `execve()`.
 - Thread-pool initialization failures, task draining, processed count, and repeated shutdown.

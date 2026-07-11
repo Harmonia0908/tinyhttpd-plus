@@ -1,20 +1,36 @@
 #include "log.h"
 
 #include "config.h"
+#include "utils.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #define LOG_DIR "logs"
 #define ACCESS_LOG_PATH "logs/access.log"
 #define ERROR_LOG_PATH "logs/error.log"
 
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static FILE *open_log_file(const char *path)
+{
+ int fd = open_cloexec(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+ FILE *file;
+
+ if (fd == -1)
+  return NULL;
+ file = fdopen(fd, "a");
+ if (file == NULL)
+  close(fd);
+ return file;
+}
 
 /*
  * Ensure the log directory exists before opening log files.
@@ -59,7 +75,7 @@ void log_access(const char *client_ip, const char *method,
 
  if (ensure_log_dir() == 0)
  {
-  fp = fopen(ACCESS_LOG_PATH, "a");
+  fp = open_log_file(ACCESS_LOG_PATH);
   if (fp != NULL)
   {
    format_timestamp(time_str, sizeof(time_str));
@@ -90,7 +106,7 @@ void log_error_message(const char *fmt, ...)
 
  if (ensure_log_dir() == 0)
  {
-  fp = fopen(ERROR_LOG_PATH, "a");
+  fp = open_log_file(ERROR_LOG_PATH);
   if (fp != NULL)
   {
    format_timestamp(time_str, sizeof(time_str));

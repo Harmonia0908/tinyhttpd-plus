@@ -130,6 +130,19 @@ static int wait_for_child(pid_t pid, int *status)
  return result == pid ? 0 : -1;
 }
 
+static void terminate_cgi_child(pid_t pid, int output_fd, int input_fd,
+                                int *input_open, int *status)
+{
+ if (*input_open)
+ {
+  close(input_fd);
+  *input_open = 0;
+ }
+ close(output_fd);
+ kill(pid, SIGKILL);
+ wait_for_child(pid, status);
+}
+
 int handle_cgi(int client, const char *path, const char *method,
                const char *query_string, int is_head, int content_length)
 {
@@ -218,8 +231,10 @@ int execute_cgi(int client, const char *path,
  default_action.sa_handler = SIG_DFL;
 
  //GET/HEAD: 不需要读取body
+ fork_fd_lock();
  //建立output管道
  if (pipe(cgi_output) < 0) {
+  fork_fd_unlock();
   free(cgi_env);
   log_error_message("CGI execution failed: %s", path);
   cannot_execute(client);
@@ -231,6 +246,7 @@ int execute_cgi(int client, const char *path,
  if (pipe(cgi_input) < 0) {
   close(cgi_output[0]);
   close(cgi_output[1]);
+  fork_fd_unlock();
   free(cgi_env);
   log_error_message("CGI execution failed: %s", path);
   cannot_execute(client);
@@ -246,6 +262,7 @@ int execute_cgi(int client, const char *path,
   close(cgi_output[1]);
   close(cgi_input[0]);
   close(cgi_input[1]);
+  fork_fd_unlock();
   free(cgi_env);
   log_error_message("CGI descriptor setup failed: %s", path);
   cannot_execute(client);
@@ -271,12 +288,15 @@ int execute_cgi(int client, const char *path,
   close(cgi_output[1]);
   close(cgi_input[0]);
   close(cgi_input[1]);
+  fork_fd_unlock();
   free(cgi_env);
   log_error_message("CGI execution failed: %s", path);
   cannot_execute(client);
   close(client);
   return 500;
  }
+ if (pid != 0)
+  fork_fd_unlock();
  if (pid == 0)  /* child: CGI script */
  {
   // cgi_output这个pipe的写端，重定向到标准输出流，
@@ -324,21 +344,15 @@ int execute_cgi(int client, const char *path,
 	    size_t chunk = remaining < sizeof(buf) ? remaining : sizeof(buf);
 	    ssize_t n = recv_retry(client, buf, chunk);
 	    if (n <= 0) {
-	     close(cgi_input[1]);
-	     cgi_input_open = 0;
-	     close(cgi_output[0]);
-	     kill(pid, SIGKILL);
-	     wait_for_child(pid, &status);
+	     terminate_cgi_child(pid, cgi_output[0], cgi_input[1],
+	                         &cgi_input_open, &status);
 	     bad_request(client);
 	     close(client);
 	     return 400;
 	    }
 	    if (write_all_fd(cgi_input[1], buf, (size_t)n) != 0) {
-	      close(cgi_input[1]);
-	      cgi_input_open = 0;
-	      close(cgi_output[0]);
-	      kill(pid, SIGKILL);
-	      wait_for_child(pid, &status);
+	      terminate_cgi_child(pid, cgi_output[0], cgi_input[1],
+	                          &cgi_input_open, &status);
 	      log_error_message("CGI execution failed: %s", path);
 	      cannot_execute(client);
 	      close(client);

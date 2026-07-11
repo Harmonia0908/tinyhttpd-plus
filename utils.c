@@ -6,12 +6,32 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+static pthread_mutex_t fork_fd_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int open_cloexec(const char *path, int flags, mode_t mode)
+{
+ int fd;
+
+ fork_fd_lock();
+ fd = open(path, flags, mode);
+ if (fd != -1 && set_cloexec(fd) == -1)
+ {
+  int saved_errno = errno;
+  close(fd);
+  fd = -1;
+  errno = saved_errno;
+ }
+ fork_fd_unlock();
+ return fd;
+}
 
 int send_all(int client, const void *data, size_t len)
 {
@@ -51,6 +71,52 @@ int set_cloexec(int fd)
    return -1;
  }
  return 0;
+}
+
+int set_nonblocking(int fd)
+{
+ int flags;
+
+ do {
+  flags = fcntl(fd, F_GETFL);
+ } while (flags == -1 && errno == EINTR);
+ if (flags == -1)
+  return -1;
+
+ while (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1)
+ {
+  if (errno != EINTR)
+   return -1;
+ }
+ return 0;
+}
+
+int set_blocking(int fd)
+{
+ int flags;
+
+ do {
+  flags = fcntl(fd, F_GETFL);
+ } while (flags == -1 && errno == EINTR);
+ if (flags == -1)
+  return -1;
+
+ while (fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) == -1)
+ {
+  if (errno != EINTR)
+   return -1;
+ }
+ return 0;
+}
+
+void fork_fd_lock(void)
+{
+ pthread_mutex_lock(&fork_fd_mutex);
+}
+
+void fork_fd_unlock(void)
+{
+ pthread_mutex_unlock(&fork_fd_mutex);
 }
 
 void error_die(const char *sc)

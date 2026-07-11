@@ -32,7 +32,7 @@
 - CGI `HEAD` 只转发 CGI 输出 header，识别 `\n\n` 和 `\r\n\r\n` 作为 header 结束。
 - CGI 非 0 退出会记录错误日志并返回失败状态给调用链；注意如果 CGI 已经输出内容，客户端可能已经收到 `200 OK`，这仍不是完整 CGI 错误语义。
 - CGI 环境在 `fork()` 前构造；子进程在 `fork()` 后只进行 fd 重定向、信号设置和 `execve()`，失败使用 `_exit()`。
-- CGI pipe、监听 socket 和客户端 socket 使用 close-on-exec，CGI 子进程不会继承无关连接 fd。
+- CGI pipe、监听 socket、客户端 socket 和 server 打开的文件使用 close-on-exec；fd 创建/标记与 `fork()` 通过同一把短期 mutex 串行化，避免并发继承窗口。
 
 ### 线程池与任务队列
 
@@ -132,7 +132,7 @@ enable_error_log=1
 - 静态文件权限不足时返回 `403`。
 - 错误响应包含 `Content-Length` 和 `Connection: close`。
 - `SIGPIPE` 被忽略，避免客户端断开导致 server 进程退出。
-- `SIGINT` / `SIGTERM` 会触发基础退出流程，停止 accept 并关闭线程池。
+- `SIGINT` / `SIGTERM` 会触发退出流程；主线程通过非阻塞 listener + 250ms `poll()` 周期可靠观察停止标志，再排空并关闭线程池。
 
 ## 请求处理流程
 
@@ -144,7 +144,7 @@ flowchart TD
     D --> E["startup: socket/bind/listen"]
     E --> F["threadpool_init(cfg->thread_num, 1000)"]
     F -->|失败| X["关闭监听 socket 并退出"]
-    F --> G["accept(client_fd)"]
+    F --> G["poll + accept(client_fd)"]
     G --> H["threadpool_submit(client_fd)"]
     H -->|queue full| Z["close(client_fd)"]
     H -->|queue has room| I["worker thread"]
@@ -242,6 +242,7 @@ make sanitizer-test  # ASan + UBSan 构建并运行同一套测试
   - symlink 指向根目录外部时返回 403。
   - POST body 截断返回 400。
   - CGI 超时后 worker 可继续处理普通请求。
+  - worker 忙碌时收到 SIGTERM，server 仍能排空任务并释放端口。
 - `tests/log_test.sh`
   - 访问日志格式。
   - 404 错误日志。

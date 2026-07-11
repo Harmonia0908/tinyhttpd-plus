@@ -16,12 +16,19 @@ PORT="${PORT:-18080}"
 SERVER_PID=""
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tinyhttpd-integration.XXXXXX")
 SERVER_LOG="$TMP_DIR/server.log"
-TEST_BINARY_FILE="htdocs/test_binary.bin"
-TEST_STATIC_FILE="htdocs/test_static.txt"
-TEST_CRLF_CGI="htdocs/head_crlf.cgi"
-TEST_SLEEP_CGI="htdocs/sleep.cgi"
+CONFIG_FILE="config/server.conf"
+CONFIG_BACKUP="$TMP_DIR/server.conf.bak"
+LOG_BACKUP="$TMP_DIR/logs.bak"
+HAD_CONFIG_DIR=0
+HAD_CONFIG_FILE=0
+HAD_LOG_PATH=0
+DOCROOT="$TMP_DIR/htdocs"
+TEST_BINARY_FILE="$DOCROOT/test_binary.bin"
+TEST_STATIC_FILE="$DOCROOT/test_static.txt"
+TEST_CRLF_CGI="$DOCROOT/head_crlf.cgi"
+TEST_SLEEP_CGI="$DOCROOT/sleep.cgi"
 TEST_OUTSIDE_FILE="$TMP_DIR/outside_secret.txt"
-TEST_SYMLINK="htdocs/outside_link.txt"
+TEST_SYMLINK="$DOCROOT/outside_link.txt"
 TEST_BINARY_OUT="$TMP_DIR/test_binary.out"
 
 echo -e "${YELLOW}=== Tinyhttpd 集成测试 ===${NC}"
@@ -68,12 +75,48 @@ cleanup() {
     rm -f "$TEST_BINARY_FILE" "$TEST_STATIC_FILE" "$TEST_CRLF_CGI" \
           "$TEST_SLEEP_CGI" "$TEST_OUTSIDE_FILE" "$TEST_SYMLINK" \
           "$TEST_BINARY_OUT"
+    rm -rf logs
+    if [ "$HAD_LOG_PATH" -eq 1 ]; then
+        mv "$LOG_BACKUP" logs
+    fi
+    if [ "$HAD_CONFIG_FILE" -eq 1 ]; then
+        mv "$CONFIG_BACKUP" "$CONFIG_FILE"
+    else
+        rm -f "$CONFIG_FILE"
+    fi
+    if [ "$HAD_CONFIG_DIR" -eq 0 ]; then
+        rmdir config 2>/dev/null || true
+    fi
     rm -rf "$TMP_DIR"
 }
 
 trap cleanup EXIT
 
-check_dependencies
+prepare_environment() {
+    if [ -d config ]; then
+        HAD_CONFIG_DIR=1
+    else
+        mkdir config
+    fi
+    if [ -f "$CONFIG_FILE" ]; then
+        HAD_CONFIG_FILE=1
+        cp "$CONFIG_FILE" "$CONFIG_BACKUP"
+    fi
+    if [ -e logs ] || [ -L logs ]; then
+        HAD_LOG_PATH=1
+        mv logs "$LOG_BACKUP"
+    fi
+    mkdir -p "$DOCROOT"
+    cp -pR htdocs/. "$DOCROOT/"
+
+    cat > "$CONFIG_FILE" <<EOF
+port=$PORT
+thread_num=4
+root_dir=$DOCROOT
+enable_access_log=0
+enable_error_log=0
+EOF
+}
 
 create_test_fixtures() {
     perl -e 'print "ABC\0DEF\0GHI"' > "$TEST_BINARY_FILE"
@@ -94,6 +137,9 @@ create_test_fixtures() {
         > "$TEST_SLEEP_CGI"
     chmod +x "$TEST_SLEEP_CGI"
 }
+
+prepare_environment
+check_dependencies
 
 # 编译项目
 echo -e "${YELLOW}1. 编译项目${NC}"
@@ -320,6 +366,41 @@ test_cgi_timeout_releases_worker() {
     fi
 }
 
+test_signal_shutdown_with_busy_worker() {
+    local request_pid
+    local watchdog_pid
+    local server_status
+
+    echo -e "\n${YELLOW}测试: worker 忙碌时 SIGTERM 仍能关闭 server${NC}"
+    curl --noproxy '*' -s -m 8 "http://127.0.0.1:$PORT/sleep.cgi" >/dev/null 2>&1 &
+    request_pid=$!
+    sleep 0.2
+    kill -TERM "$SERVER_PID"
+
+    (
+        sleep 8
+        kill -KILL "$SERVER_PID" 2>/dev/null || true
+    ) &
+    watchdog_pid=$!
+
+    set +e
+    wait "$SERVER_PID"
+    server_status=$?
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+    wait "$request_pid" 2>/dev/null || true
+    set -e
+    SERVER_PID=""
+
+    if [ "$server_status" -ne 0 ]; then
+        fail "server 未能在 busy worker 场景下优雅退出，status=$server_status"
+    fi
+    if is_port_listening "$PORT"; then
+        fail "server 退出后仍占用端口 $PORT"
+    fi
+    pass
+}
+
 # 运行测试
 echo -e "${YELLOW}4. 执行测试用例${NC}"
 
@@ -379,8 +460,12 @@ done
 # 9. CGI timeout
 test_cgi_timeout_releases_worker
 
+# 10. Signal-driven shutdown while a worker is busy
+test_signal_shutdown_with_busy_worker
+
 # 清理
 echo -e "\n${YELLOW}5. 清理资源${NC}"
+trap - EXIT
 cleanup
 SERVER_PID=""
 

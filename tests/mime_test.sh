@@ -6,16 +6,19 @@ PORT="${PORT:-18086}"
 SERVER_PID=""
 CONFIG_FILE="config/server.conf"
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tinyhttpd-mime.XXXXXX")
+DOCROOT="$TMP_DIR/htdocs"
 CONFIG_BACKUP="$TMP_DIR/server.conf.bak"
 SERVER_LOG="$TMP_DIR/server.log"
+LOG_BACKUP="$TMP_DIR/logs.bak"
 HAD_CONFIG_DIR=0
 HAD_CONFIG_FILE=0
+HAD_LOG_PATH=0
 TEST_FILES="
-htdocs/mime_test.html
-htdocs/mime_test.css
-htdocs/mime_test.js
-htdocs/mime_test.png
-htdocs/mime_test.unknown
+$DOCROOT/mime_test.html
+$DOCROOT/mime_test.css
+$DOCROOT/mime_test.js
+$DOCROOT/mime_test.png
+$DOCROOT/mime_test.unknown
 "
 
 cleanup() {
@@ -31,6 +34,10 @@ cleanup() {
     fi
     if [ "$HAD_CONFIG_DIR" -eq 0 ]; then
         rmdir config 2>/dev/null || true
+    fi
+    rm -rf logs
+    if [ "$HAD_LOG_PATH" -eq 1 ]; then
+        mv "$LOG_BACKUP" logs
     fi
     rm -rf "$TMP_DIR"
 }
@@ -76,14 +83,6 @@ assert_header() {
 
 trap cleanup EXIT
 
-require_command curl
-require_command grep
-
-if [ "${SKIP_BUILD:-0}" != "1" ]; then
-    make clean
-    make
-fi
-
 if [ -d config ]; then
     HAD_CONFIG_DIR=1
 else
@@ -93,19 +92,34 @@ if [ -f "$CONFIG_FILE" ]; then
     HAD_CONFIG_FILE=1
     cp "$CONFIG_FILE" "$CONFIG_BACKUP"
 fi
+if [ -e logs ] || [ -L logs ]; then
+    HAD_LOG_PATH=1
+    mv logs "$LOG_BACKUP"
+fi
+mkdir -p "$DOCROOT"
+cp -pR htdocs/. "$DOCROOT/"
+
+require_command curl
+require_command grep
+
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    make clean
+    make
+fi
+
 cat > "$CONFIG_FILE" <<EOF
 port=$PORT
 thread_num=4
-root_dir=./htdocs
+root_dir=$DOCROOT
 enable_access_log=1
 enable_error_log=1
 EOF
 
-printf '<!doctype html><title>mime</title>\n' > htdocs/mime_test.html
-printf 'body { color: #111; }\n' > htdocs/mime_test.css
-printf 'console.log("mime");\n' > htdocs/mime_test.js
-printf '\211PNG\r\n\032\n' > htdocs/mime_test.png
-printf 'unknown\n' > htdocs/mime_test.unknown
+printf '<!doctype html><title>mime</title>\n' > "$DOCROOT/mime_test.html"
+printf 'body { color: #111; }\n' > "$DOCROOT/mime_test.css"
+printf 'console.log("mime");\n' > "$DOCROOT/mime_test.js"
+printf '\211PNG\r\n\032\n' > "$DOCROOT/mime_test.png"
+printf 'unknown\n' > "$DOCROOT/mime_test.unknown"
 
 ./httpd "$PORT" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!

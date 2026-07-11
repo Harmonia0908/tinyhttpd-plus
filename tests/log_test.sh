@@ -4,13 +4,16 @@ set -e
 
 PORT="${PORT:-18082}"
 SERVER_PID=""
-FAIL_CGI="htdocs/log_fail.cgi"
 CONFIG_FILE="config/server.conf"
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/tinyhttpd-log.XXXXXX")
+DOCROOT="$TMP_DIR/htdocs"
+FAIL_CGI="$DOCROOT/log_fail.cgi"
 CONFIG_BACKUP="$TMP_DIR/server.conf.bak"
 SERVER_LOG="$TMP_DIR/server.log"
+LOG_BACKUP="$TMP_DIR/logs.bak"
 HAD_CONFIG_DIR=0
 HAD_CONFIG_FILE=0
+HAD_LOG_PATH=0
 
 cleanup() {
     if [ -n "$SERVER_PID" ]; then
@@ -25,6 +28,10 @@ cleanup() {
     fi
     if [ "$HAD_CONFIG_DIR" -eq 0 ]; then
         rmdir config 2>/dev/null || true
+    fi
+    rm -rf logs
+    if [ "$HAD_LOG_PATH" -eq 1 ]; then
+        mv "$LOG_BACKUP" logs
     fi
     rm -rf "$TMP_DIR"
 }
@@ -63,14 +70,6 @@ assert_log_contains() {
 
 trap cleanup EXIT
 
-require_command curl
-require_command grep
-
-if [ "${SKIP_BUILD:-0}" != "1" ]; then
-    make clean
-    make
-fi
-
 if [ -d config ]; then
     HAD_CONFIG_DIR=1
 else
@@ -80,15 +79,29 @@ if [ -f "$CONFIG_FILE" ]; then
     HAD_CONFIG_FILE=1
     cp "$CONFIG_FILE" "$CONFIG_BACKUP"
 fi
+if [ -e logs ] || [ -L logs ]; then
+    HAD_LOG_PATH=1
+    mv logs "$LOG_BACKUP"
+fi
+mkdir -p "$DOCROOT"
+cp -pR htdocs/. "$DOCROOT/"
+
+require_command curl
+require_command grep
+
+if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    make clean
+    make
+fi
+
 cat > "$CONFIG_FILE" <<EOF
 port=$PORT
 thread_num=4
-root_dir=./htdocs
+root_dir=$DOCROOT
 enable_access_log=1
 enable_error_log=1
 EOF
 
-rm -rf logs
 mkdir -p logs
 
 printf '%s\n' \
