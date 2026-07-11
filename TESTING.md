@@ -15,15 +15,23 @@ make clean
 make
 ```
 
-Expected result: `httpd`, `client`, and `benchmark` are built without compiler errors.
+Expected result: `httpd`, `client`, and `benchmark` are built with C17 and the configured warning set, without compiler errors or warnings.
+
+## Unit Tests
+
+```sh
+make unit-test
+```
+
+These tests use `socketpair()` and local processes rather than TCP ports. They cover request/header boundaries, CGI descriptor inheritance, and thread-pool lifecycle behavior.
 
 ## Full Automated Integration Test
 
 ```sh
-tests/run_integration_tests.sh
+make test
 ```
 
-The script starts the server on `127.0.0.1:18080` by default, creates temporary fixtures under `htdocs`, runs HTTP requests, and cleans up its test files when it exits.
+This builds once, runs the unit tests, then runs all four shell integration suites. They start servers only on `127.0.0.1`, create isolated temporary directories, preserve an existing `config/server.conf`, and clean up processes, ports, fixtures, and output files on exit.
 
 To use a different port:
 
@@ -46,6 +54,22 @@ Current coverage includes:
 - Single overlong request/header lines return `400`.
 - Total headers over 8 KiB return `413` for `GET`, `HEAD`, `POST`, and `OPTIONS`.
 - CGI timeout handling releases workers instead of blocking the pool permanently.
+- Overlong URI, missing URI, duplicate `Content-Length`, and maximum body-length boundaries.
+- CGI children do not inherit client sockets across `execve()`.
+- Thread-pool initialization failures, task draining, processed count, and repeated shutdown.
+- Configuration, access/error logging, and MIME mappings.
+
+## Sanitizers
+
+```sh
+make sanitizer-test
+```
+
+The target rebuilds every executable and unit test with AddressSanitizer and UndefinedBehaviorSanitizer, then runs the same unit and integration suites. Apple Clang does not provide LeakSanitizer on macOS; the Ubuntu CI run uses ASan's Linux defaults, including supported leak detection.
+
+## Continuous Integration
+
+`.github/workflows/ci.yml` runs `make test` and `make sanitizer-test` as separate Ubuntu jobs. The tests do not contact external services; the workflow only installs the local `nc` test utility before running them.
 
 ## Manual Server Run
 
@@ -86,15 +110,14 @@ Stop the server with `Ctrl-C` in the terminal running `./httpd`.
 
 ## Latest Local Verification
 
-Verified on 2026-05-09 with:
+Verified locally on 2026-07-11 with:
 
 ```sh
-tests/run_integration_tests.sh
+make test
+make sanitizer-test
 ```
 
-Result: all integration tests passed.
-
-Also verified manually in Chrome against `http://127.0.0.1:18082/` and `http://127.0.0.1:18082/date.cgi`.
+Result: strict build, unit tests, all integration suites, ASan, and UBSan passed. On this macOS host, forcing `ASAN_OPTIONS=detect_leaks=1` is unsupported, so the portable target does not force that option.
 
 ## Troubleshooting
 

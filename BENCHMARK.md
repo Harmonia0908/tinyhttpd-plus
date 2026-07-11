@@ -19,16 +19,16 @@ make benchmark
 ### 参数说明
 
 - `host`: 服务器地址（如 127.0.0.1）
-- `port`: 服务器端口（如 80）
+- `port`: 服务器端口，范围 1-65535（如 8080）
 - `path`: 请求路径（如 / 或 /index.html）
-- `num_threads`: 并发线程数（建议 1-50）
-- `requests_per_thread`: 每个线程发送的请求数
+- `num_threads`: 并发线程数，范围 1-50
+- `requests_per_thread`: 每个线程发送的请求数，范围 1-1000
 
 ## 示例
 
 ### 基础测试
 ```bash
-./benchmark 127.0.0.1 80 / 10 100
+./benchmark 127.0.0.1 8080 / 10 100
 ```
 - 10 个线程
 - 每个线程发送 100 个请求
@@ -36,7 +36,7 @@ make benchmark
 
 ### 高并发测试
 ```bash
-./benchmark 127.0.0.1 80 / 50 100
+./benchmark 127.0.0.1 8080 / 50 100
 ```
 - 50 个线程
 - 每个线程发送 100 个请求
@@ -44,7 +44,7 @@ make benchmark
 
 ### 轻量测试
 ```bash
-./benchmark 127.0.0.1 80 /index.html 5 50
+./benchmark 127.0.0.1 8080 /index.html 5 50
 ```
 - 5 个线程
 - 每个线程发送 50 个请求
@@ -59,7 +59,7 @@ make benchmark
 
 2. **在另一个终端运行压测**
    ```bash
-   ./benchmark 127.0.0.1 80 / 10 100
+   ./benchmark 127.0.0.1 8080 / 10 100
    ```
 
 3. **查看结果**
@@ -76,7 +76,7 @@ make benchmark
 ```
 Starting load test...
 Host: 127.0.0.1
-Port: 80
+Port: 8080
 Path: /
 Threads: 10
 Requests per thread: 100
@@ -98,17 +98,17 @@ Average response time: 0.0234 seconds
 
 ### 1. 静态文件测试
 ```bash
-./benchmark 127.0.0.1 80 /index.html 10 100
+./benchmark 127.0.0.1 8080 /index.html 10 100
 ```
 
 ### 2. CGI 脚本测试
 ```bash
-./benchmark 127.0.0.1 80 /color.cgi 5 50
+./benchmark 127.0.0.1 8080 /color.cgi 5 50
 ```
 
 ### 3. 路径遍历防护测试
 ```bash
-./benchmark 127.0.0.1 80 /../../../etc/passwd 5 20
+./benchmark 127.0.0.1 8080 /../../../etc/passwd 5 20
 ```
 预期：所有请求都应该失败（返回 403）
 
@@ -117,10 +117,10 @@ Average response time: 0.0234 seconds
 
 ### 5. 不同并发级别测试
 ```bash
-./benchmark 127.0.0.1 80 / 1 100
-./benchmark 127.0.0.1 80 / 10 100
-./benchmark 127.0.0.1 80 / 20 100
-./benchmark 127.0.0.1 80 / 50 100
+./benchmark 127.0.0.1 8080 / 1 100
+./benchmark 127.0.0.1 8080 / 10 100
+./benchmark 127.0.0.1 8080 / 20 100
+./benchmark 127.0.0.1 8080 / 50 100
 ```
 
 ## 性能指标说明
@@ -137,6 +137,7 @@ Average response time: 0.0234 seconds
 3. **网络延迟**: 测试结果受网络环境影响
 4. **服务器状态**: 确保服务器在测试前已启动
 5. **端口占用**: 确保测试端口未被其他程序占用
+6. **结果边界**: 工具只读取响应的第一个 1KB 块，并以其中出现 `200 OK` 作为成功；没有连接/读取超时、响应完整性校验或延迟分位数，因此不应用于严谨性能结论
 
 ## 故障排查
 

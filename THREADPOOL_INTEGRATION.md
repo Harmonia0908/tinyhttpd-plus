@@ -1,149 +1,59 @@
-================================================================================
-线程池集成说明 - 如何在 Tinyhttpd 中替换 pthread_create
-================================================================================
+# 线程池设计与集成说明
 
-一、修改 Makefile
---------------------------------------------------------------------------------
+本文记录当前实现，不是迁移步骤。Tinyhttpd 的主线程只负责 `accept()`，固定数量的 worker 从有界 FIFO 队列取出连接并执行 `handle_client()`。
 
-修改 Makefile，在编译时添加 threadpool.c：
+## 公共接口
 
-    httpd: httpd.c threadpool.c
-        gcc -g3 -W -Wall -pthread -o $@ $^
+```c
+typedef void (*task_handler)(int client_fd);
 
-二、修改 httpd.c
---------------------------------------------------------------------------------
+int threadpool_init(int thread_count, int max_queue_size,
+                    task_handler handler);
+int threadpool_submit(int client_fd);
+void threadpool_shutdown(void);
+int threadpool_get_processed_count(void);
+```
 
-1. 添加头文件包含：
+- `threadpool_init()`：成功返回 0，参数非法、重复初始化、分配失败或 worker 创建失败时返回 -1。worker 数范围为 1–100。
+- `threadpool_submit()`：只接收已经初始化且尚未关闭的 pool。队列满或分配失败时返回 -1，调用者仍拥有并负责关闭 `client_fd`。
+- `threadpool_shutdown()`：停止接收新任务，唤醒 worker，排空已经接受的任务，join 全部 worker，并释放 mutex、condition variable、线程数组和队列节点。未初始化或重复调用是安全的 no-op。
+- `threadpool_get_processed_count()`：返回本次 pool 生命周期中 handler 已完成的任务数。
 
-    #include "threadpool.h"
+## 所有权与资源规则
 
-2. 在 httpd.c 开头添加 handle_client 包装函数（放在 accept_request 之前）：
+```text
+accept() 成功
+  ├─ submit() 失败 → server 主线程 close(client_fd)
+  └─ submit() 成功 → 队列拥有 fd 值
+                        └─ worker 调用 handle_client(fd)
+                              └─ 请求处理路径关闭 fd
+```
 
-    void handle_client(int client_fd) {
-        struct timeval tv;
-        tv.tv_sec = 5;
-        tv.tv_usec = 0;
-        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+任务节点直接保存 `int client_fd`，不再为 fd 单独分配堆内存。handler 必须在所有返回路径关闭连接；线程池只管理任务节点和线程生命周期。
 
-        accept_request(client_fd);
-    }
+## 并发不变量
 
-3. 修改 main 函数，使用线程池代替 pthread_create：
+- 队列的 `head`、`tail`、`task_count` 和 `shutdown` 只在 `pool.mutex` 下访问。
+- 初始化、提交和关闭之间的生命周期切换由单独的 `lifecycle_mutex` 串行化，避免 submit 与 mutex 销毁并发。
+- worker 在“队列为空且 shutdown 已设置”时退出；若 shutdown 时队列非空，会继续处理直到排空。
+- 完成计数使用原子操作，不参与任务调度正确性。
 
-    int main(int argc, char *argv[]) {
-        int server_sock = -1;
-        u_short port = 8080; // 默认端口 8080
-        int client_sock = -1;
-        struct sockaddr_in client_name;
-        socklen_t client_name_len = sizeof(client_name);
+## Server 集成
 
-        // 解析命令行参数
-        if (argc > 1) {
-            int port_arg = atoi(argv[1]);
-            if (port_arg <= 0 || port_arg > 65535) {
-                port = 8080;
-            } else {
-                port = (u_short)port_arg;
-            }
-        }
+`server_run()` 使用配置的 `thread_num` 和固定队列长度 1000 初始化线程池。初始化失败时关闭监听 socket 并返回非 0；队列满时关闭刚接受的 client socket。`SIGINT` / `SIGTERM` 令 accept 循环退出，然后调用 `threadpool_shutdown()` 完成有界的优雅关闭。
 
-        server_sock = startup(&port);
-        printf("httpd running on port %d\n", port);
+## 测试
 
-        // 创建线程池，4个工作线程，队列大小1000
-        threadpool_init(4, 1000, handle_client);
+`tests/threadpool_test.c` 覆盖：
 
-        while (1) {
-            client_sock = accept(server_sock,
-                                 (struct sockaddr *)&client_name,
-                                 &client_name_len);
-            if (client_sock == -1) {
-                // 处理瞬时错误，避免服务退出
-                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-                    continue;
-                }
-                error_die("accept");
-            }
+- 非法 worker 数、队列长度和 NULL handler。
+- 合法初始化和任务提交。
+- shutdown 排空已接受任务。
+- processed count。
+- 重复 shutdown 和关闭后拒绝 submit。
 
-            // 提交任务到线程池，而不是创建新线程
-            if (threadpool_submit(client_sock) != 0) {
-                close(client_sock);
-            }
-        }
+运行：
 
-        threadpool_shutdown();
-        close(server_sock);
-        return 0;
-    }
-
-4. 修改 accept_request 函数签名：
-
-    // 旧签名（需要修改）：
-    // void accept_request(int *client_ptr);
-    
-    // 新签名（直接接收 client_fd）：
-    void accept_request(int client);
-
-5. 删除 pthread 相关代码（不再需要）：
-
-    // 删除这两行：
-    // pthread_t newthread;
-    // if (pthread_create(&newthread, NULL, (void *)accept_request, (void *)(intptr_t)client_sock) != 0)
-
-三、关键改动对比
---------------------------------------------------------------------------------
-
-原来的代码（每个请求创建一个线程）：
-
-    pthread_t newthread;
-    while (1) {
-        client_sock = accept(...);
-        if (pthread_create(&newthread, NULL,
-            (void *)accept_request,
-            (void *)(intptr_t)client_sock) != 0)
-            perror("pthread_create");
-    }
-
-使用线程池后：
-
-    threadpool_init(4, 1000, handle_client);
-    while (1) {
-        client_sock = accept(...);
-        if (threadpool_submit(client_sock) != 0) {
-            close(client_sock);
-        }
-    }
-
-四、内存管理说明
---------------------------------------------------------------------------------
-
-线程池使用堆分配传递 client_fd：
-
-    task_create():
-        - 分配 task 结构体 (malloc)
-        - 直接存储 client_fd (int)
-
-    worker():
-        - 调用 handler(client_fd) 处理请求
-        - 调用 task_destroy() 释放 task 结构体
-
-    handle_client(int client_fd):
-        - 直接使用 client_fd 值
-
-    accept_request(int client):
-        - 直接使用 client 值
-        - 函数结束时自动释放栈变量
-
-五、编译测试
---------------------------------------------------------------------------------
-
-    make clean
-    make
-    ./httpd [端口号]  # 默认 8080
-
-例如：
-
-    ./httpd 8080  # 在 8080 端口启动
-    ./httpd 8888  # 在 8888 端口启动
-
-================================================================================
+```bash
+make unit-test
+```
