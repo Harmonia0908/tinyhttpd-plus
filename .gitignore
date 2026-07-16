@@ -28,6 +28,10 @@ logs/
 tests/tmp/
 docs/project_interview_notes.md
 
+# local runtime configuration
+config/server.conf
+
 # code analysis / graph generation artifacts
+compile_commands.json
 .codegraph/
 graphify-out/

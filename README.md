@@ -19,7 +19,7 @@
 - 目录请求会尝试补 `index.html`。
 - 根据文件扩展名返回 `Content-Type`。
 - 返回 `Content-Length` 和 `Connection: close`。
-- 使用 `fread()` 分块读取文件，并通过 `send_all()` 发送，避免因 `NUL` 字节截断二进制内容。
+- 使用 `fread()` 分块读取文件，并通过 `net_write_all()` 发送，避免因 `NUL` 字节截断二进制内容。
 - `HEAD` 静态文件响应只返回 header，不发送 body。
 
 ### CGI
@@ -138,9 +138,9 @@ enable_error_log=1
 
 ```mermaid
 flowchart TD
-    A["main.c: main"] --> B["load_config(config/server.conf)"]
+    A["src/app/main.c: main"] --> B["load_config(config/server.conf)"]
     B --> C["set_server_config"]
-    C --> D["server.c: server_run"]
+    C --> D["src/server/server.c: server_run"]
     D --> E["startup: socket/bind/listen"]
     E --> F["threadpool_init(cfg->thread_num, 1000)"]
     F -->|失败| X["关闭监听 socket 并退出"]
@@ -149,15 +149,15 @@ flowchart TD
     H -->|queue full| Z["close(client_fd)"]
     H -->|queue has room| I["worker thread"]
     I --> J["handle_client: set SO_RCVTIMEO"]
-    J --> K["request.c: accept_request"]
-    K --> L["parse_request_line"]
-    L --> M["read_headers"]
+    J --> K["src/http/request.c: accept_request"]
+    K --> L["net_read_line: 读取请求行/header"]
+    L --> M["纯解析器: http_parse_request_line/http_parse_headers"]
     M --> N{"method"}
-    N -->|OPTIONS| O["send Allow + CORS headers"]
+    N -->|OPTIONS| O["build OPTIONS response + net_write_all"]
     N -->|GET / HEAD| P["resolve_safe_path(root_dir + url)"]
     N -->|POST| Q["resolve_safe_path + handle_cgi"]
     P --> R{"static or CGI"}
-    R -->|static| S["serve_file: headers + fread + send_all"]
+    R -->|static| S["serve_file: build headers + fread + net_write_all"]
     R -->|CGI| T["handle_cgi"]
     Q --> T
     T --> U["fork + pipe + dup2 + execve"]
@@ -176,13 +176,36 @@ make clean
 make
 ```
 
-默认使用 C17，并启用 `-Wall -Wextra -Wpedantic -Wconversion -Wshadow`。可通过 `CC`、`CFLAGS` 和 `LDFLAGS` 覆盖编译器及附加选项。
+默认构建保持原有的 `-O2 -g`，生成根目录下的 `httpd`、`client` 和
+`benchmark`。模块对象、profile 二进制和自动生成的头文件依赖位于
+`build/default/`，根目录产物作为兼容入口同步生成。
+
+```bash
+make debug    # 清理后使用 -O0 -g3 构建
+make release  # 清理后使用 -O2 -g0 构建
+make help     # 查看常用目标
+```
+
+也可以使用统一脚本，省略参数时构建 Debug 版本：
+
+```bash
+scripts/build.sh
+scripts/build.sh release
+```
+
+所有配置都使用 C17，并启用 `-Wall -Wextra -Wpedantic -Wconversion -Wshadow`。
+不会把历史警告提升为 `-Werror`。仍可通过 `CC`、`CFLAGS`、`CPPFLAGS` 和
+`LDFLAGS` 覆盖工具链或附加选项；`CPPFLAGS` 用于追加预处理选项，项目必需的
+include 路径和平台宏始终保留。
 
 `httpd` 由以下模块编译链接：
 
 ```text
-main.c server.c request.c response.c static_file.c cgi.c utils.c
-log.c config.c mime.c threadpool.c
+src/app/main.c src/app/config.c src/server/server.c
+src/http/request.c src/http/parser.c src/http/response.c
+src/http/response_writer.c src/http/static_file.c src/http/mime.c src/http/resource.c
+src/cgi/cgi.c src/concurrency/threadpool.c src/net/io.c
+src/common/fd_lifecycle.c src/common/log.c
 ```
 
 ### 运行
@@ -215,6 +238,10 @@ curl --noproxy '*' -i -X OPTIONS http://127.0.0.1:8080/
 make unit-test       # 不监听 TCP 端口的边界/生命周期测试
 make test            # 构建、单元测试和全部本地集成测试
 make sanitizer-test  # ASan + UBSan 构建并运行同一套测试
+
+scripts/test.sh unit
+scripts/test.sh all
+scripts/test.sh sanitizer
 ```
 
 也可以单独运行 shell 测试；例如 `PORT=18081 tests/run_integration_tests.sh`。测试只访问 `127.0.0.1`，不依赖外部网络；fixture、临时输出、后台 server 和端口都会在退出 trap 中清理。若指定端口已被其他进程占用，测试会失败而不会终止该进程。
@@ -225,6 +252,12 @@ make sanitizer-test  # ASan + UBSan 构建并运行同一套测试
   - 超长 URI 返回 414，不发生静默截断。
   - 缺失 URI 和重复 `Content-Length` 返回 400。
   - 最大允许 `Content-Length` 边界。
+- `tests/http_parser_test.c`
+  - 直接从字符串/字节缓冲区解析请求行和 header，不创建 socket。
+  - 锁定方法、URI、`Content-Length`、单行和累计大小边界。
+- `tests/http_response_test.c`
+  - 锁定静态、OPTIONS 和错误响应的生成结果。
+  - 比较旧 fd 适配器输出的完整响应字节。
 - `tests/cgi_test.c` / `tests/cgi_fd_probe.c`
   - 16 个同步并发 CGI 在 `exec` 后不继承测试范围 `fd 3-255` 内的无关描述符。
 - `tests/threadpool_test.c`
@@ -261,20 +294,42 @@ make sanitizer-test  # ASan + UBSan 构建并运行同一套测试
 
 ```text
 Tinyhttpd/
-├── main.c                        # 入口: 加载配置, 命令行端口覆盖, 启动 server
-├── server.c / server.h           # socket/bind/listen/accept, 信号处理, 线程池接入
-├── request.c / request.h         # 请求行解析, header 读取, 方法分发, 状态日志
-├── response.c / response.h       # 静态响应头, 错误响应, Content-Length
-├── static_file.c / static_file.h # 静态文件读取与发送
-├── cgi.c / cgi.h                 # CGI: pipe/fork/dup2/execve + 超时
-├── utils.c / utils.h             # send_all, get_line, 路径安全校验
-├── config.c / config.h           # key=value 配置解析和全局配置
-├── log.c / log.h                 # access/error 日志, mutex 保护
-├── mime.c / mime.h               # 扩展名到 Content-Type 映射
-├── threadpool.c / threadpool.h   # 固定线程池 + FIFO 任务队列
-├── simpleclient.c                # 历史 TCP 客户端 demo
-├── benchmark.c                   # 简单多线程压测工具
+├── include/                      # 对外可见的模块接口
+│   ├── server.h / request.h / response.h / static_file.h
+│   ├── cgi.h / threadpool.h / utils.h
+│   ├── http_parser.h / http_response.h / http_protocol.h
+│   └── net_io.h / fd_lifecycle.h / config.h / log.h / mime.h
+├── src/
+│   ├── app/                      # 入口与配置装配
+│   │   └── main.c / config.c
+│   ├── server/                   # 监听、accept、信号与连接调度
+│   │   └── server.c
+│   ├── http/                     # 纯解析/响应生成及 HTTP 调度
+│   │   ├── parser.c / response.c / response_writer.c
+│   │   └── request.c / resource.c / static_file.c / mime.c
+│   ├── cgi/                      # CGI 管道、子进程与数据转发
+│   │   └── cgi.c
+│   ├── concurrency/              # 固定线程池与 FIFO 任务队列
+│   │   └── threadpool.c
+│   ├── net/                      # 可靠的 socket 字节读取与写入
+│   │   └── io.c
+│   └── common/                   # fd/fork 生命周期与日志
+│       └── fd_lifecycle.c / log.c
+├── tools/
+│   ├── simpleclient.c            # 历史 TCP 客户端 demo
+│   └── benchmark.c               # 简单多线程压测工具
+├── scripts/
+│   ├── build.sh                   # Debug/Release 构建入口
+│   └── test.sh                    # unit/all/sanitizer 测试入口
+├── docs/
+│   ├── behavior-baseline.md       # 当前外部行为和验证基线
+│   ├── architecture.md            # 模块、依赖方向和数据流
+│   ├── code-walkthrough.md        # 从 main 开始的执行导览
+│   ├── module-guide.md            # 文件职责和联动修改指南
+│   ├── debugging.md               # 构建、测试和调试手册
+│   └── refactoring-history.md     # 已完成整理与剩余技术债
 ├── Makefile
+├── .clang-format                 # C 源码增量格式化规则
 ├── htdocs/                       # 默认静态文件和 CGI 脚本
 │   ├── index.html
 │   ├── index2.html
@@ -283,6 +338,8 @@ Tinyhttpd/
 │   └── color.cgi
 ├── tests/
 │   ├── request_test.c            # request/header 边界测试
+│   ├── http_parser_test.c        # 无 socket 的缓冲区解析测试
+│   ├── http_response_test.c      # 响应生成和完整字节测试
 │   ├── cgi_test.c                # CGI fd 继承回归测试
 │   ├── cgi_fd_probe.c            # 被 exec 的 fd 探针
 │   ├── threadpool_test.c         # 线程池生命周期测试
@@ -312,10 +369,25 @@ int threadpool_get_processed_count(void);
 
 `.github/workflows/ci.yml` 在 Ubuntu 上执行两个独立 job：
 
-- `make test`：严格编译、单元测试和全部集成测试。
-- `make sanitizer-test`：AddressSanitizer + UndefinedBehaviorSanitizer 下运行相同测试。
+- 普通 job 使用 `scripts/build.sh debug`、`scripts/build.sh release` 和
+  `scripts/test.sh all`。
+- sanitizer job 使用 `scripts/test.sh sanitizer`，在 AddressSanitizer 与
+  UndefinedBehaviorSanitizer 下运行相同测试。
 
 macOS 的 Apple Clang 不支持 LeakSanitizer，因此本地目标不强制 `detect_leaks`；Ubuntu CI 使用 ASan 的平台默认 leak detection。
+
+## 代码格式
+
+`.clang-format` 延续当前 C 代码的 Allman 大括号和单空格缩进。只格式化当前正在
+修改的文件，不要求批量重排历史代码：
+
+```bash
+clang-format -i src/http/parser.c include/http_parser.h
+```
+
+macOS Command Line Tools 未将 `clang-format` 放入 `PATH` 时，可使用
+`xcrun clang-format`。本阶段没有启用 clang-tidy：当前没有编译数据库，直接启用
+通用检查会产生较多不可操作的历史噪声。
 
 ## 安全边界
 

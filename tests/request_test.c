@@ -1,9 +1,11 @@
 #include "request.h"
+#include "net_io.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 static void fail(const char *message)
@@ -92,6 +94,41 @@ static void test_rejects_duplicate_content_length(void)
   fail("duplicate Content-Length was not rejected with 400");
 }
 
+static void test_rejects_duplicate_content_length_before_end_of_headers(void)
+{
+ int sockets[2];
+ int content_length = -1;
+ int status;
+ struct timeval timeout = {0, 100000};
+
+ if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0)
+  fail("socketpair failed");
+ write_request(sockets[0],
+               "Content-Length: 3\r\nContent-Length: 4\r\n");
+ if (setsockopt(sockets[1], SOL_SOCKET, SO_RCVTIMEO,
+                &timeout, sizeof(timeout)) != 0)
+  fail("could not set receive timeout");
+
+ status = read_headers(sockets[1], &content_length);
+ close_request_socket(sockets);
+
+ if (status != 400)
+  fail("duplicate Content-Length waited for end of headers");
+}
+
+static void test_get_line_preserves_nonpositive_size_behavior(void)
+{
+ char zero_size_buffer[1] = {'x'};
+ char negative_size_buffer[1] = {'x'};
+
+ if (get_line(-1, zero_size_buffer, 0) != 0 ||
+     zero_size_buffer[0] != '\0')
+  fail("get_line changed zero-size compatibility behavior");
+ if (get_line(-1, negative_size_buffer, -1) != 0 ||
+     negative_size_buffer[0] != '\0')
+  fail("get_line changed negative-size compatibility behavior");
+}
+
 static void test_accepts_valid_request_boundaries(void)
 {
  char method[16];
@@ -118,6 +155,8 @@ int main(void)
  test_rejects_overlong_uri();
  test_rejects_missing_uri();
  test_rejects_duplicate_content_length();
+ test_rejects_duplicate_content_length_before_end_of_headers();
+ test_get_line_preserves_nonpositive_size_behavior();
  test_accepts_valid_request_boundaries();
  puts("PASS: request parser boundary tests completed");
  return EXIT_SUCCESS;

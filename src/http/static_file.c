@@ -1,6 +1,7 @@
 #include "static_file.h"
 
-#include "response.h"
+#include "http_response.h"
+#include "net_io.h"
 #include "utils.h"
 
 #include <errno.h>
@@ -20,7 +21,7 @@ void cat(int client, FILE *resource)
 
  while ((nread = fread(buf, 1, sizeof(buf), resource)) > 0)
  {
-  if (send_all(client, buf, nread) < 0)
+  if (net_write_all(client, buf, nread) < 0)
    break;
  }
 }
@@ -43,14 +44,26 @@ int serve_file(int client, const char *filename, int is_head, off_t file_size)
  }
  if (resource == NULL) {
   int saved_errno = errno;
+  http_response_buffer_t response;
   if (saved_errno == EACCES)
-   send_error_page(client, 403, "Forbidden", "Permission denied.");
+  {
+   if (http_build_error_response(&response, 403, "Forbidden",
+                                 "Permission denied.") == 0)
+    net_write_all(client, response.data, response.length);
+  }
   else
-   not_found(client);
+  {
+   if (http_build_error_response(
+           &response, 404, "NOT FOUND",
+           "The server could not fulfill your request because the resource specified is unavailable or nonexistent.") == 0)
+    net_write_all(client, response.data, response.length);
+  }
   close(client);
   return saved_errno == EACCES ? 403 : 404;
  } else {
-  headers(client, filename, file_size);
+  http_response_buffer_t response;
+  if (http_build_static_headers(&response, filename, file_size) == 0)
+   net_write_all(client, response.data, response.length);
   if (!is_head)
    cat(client, resource);
   fclose(resource);

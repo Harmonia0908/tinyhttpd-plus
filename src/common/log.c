@@ -1,7 +1,7 @@
 #include "log.h"
 
 #include "config.h"
-#include "utils.h"
+#include "fd_lifecycle.h"
 
 #include <errno.h>
 #include <fcntl.h>

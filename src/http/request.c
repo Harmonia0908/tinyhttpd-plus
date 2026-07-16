@@ -1,24 +1,21 @@
 #include "request.h"
 
 #include "cgi.h"
+#include "http_parser.h"
+#include "http_response.h"
 #include "log.h"
-#include "response.h"
+#include "net_io.h"
 #include "static_file.h"
 #include "utils.h"
 
 #include <arpa/inet.h>
-#include <ctype.h>
-#include <errno.h>
 #include <netinet/in.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#define ISspace(x) isspace((unsigned char)(x))
 
 /*
  * Write error log entries for request failures with status codes that are
@@ -32,6 +29,16 @@ static void log_request_error(int status, const char *url, const char *path)
   log_error_message("Permission denied: %s", path != NULL && path[0] != '\0' ? path : url);
  else if (status == 500)
   log_error_message("Internal error while handling: %s", url != NULL ? url : "-");
+}
+
+static void write_error_response(int client, int status_code,
+                                 const char *status_text,
+                                 const char *message)
+{
+ http_response_buffer_t response;
+
+ if (http_build_error_response(&response, status_code, status_text, message) == 0)
+  net_write_all(client, response.data, response.length);
 }
 
 void accept_request(int client)
@@ -75,9 +82,12 @@ void accept_request(int client)
  if (status != 0)
  {
   if (status == 400)
-   bad_request(client);
+   write_error_response(
+       client, 400, "BAD REQUEST",
+       "Your browser sent a bad request, such as a POST without a Content-Length.");
   else if (status == 413)
-   send_413(client);
+   write_error_response(client, 413, "Payload Too Large",
+                        "Request size exceeds the configured limit.");
   if (status > 0)
    log_access(client_ip, method, access_url, status);
   close(client);
@@ -85,30 +95,12 @@ void accept_request(int client)
  }
 
  //处理OPTIONS方法
-  if (strcasecmp(method, "OPTIONS") == 0)
+ if (strcasecmp(method, "OPTIONS") == 0)
  {
-  char buf[1024];
-  
-  snprintf(buf, sizeof(buf), "HTTP/1.0 200 OK\r\n");
-  send_all(client, buf, strlen(buf));
-  
-  snprintf(buf, sizeof(buf), "%s", SERVER_STRING);
-  send_all(client, buf, strlen(buf));
-  
-  snprintf(buf, sizeof(buf), "Allow: GET, POST, HEAD, OPTIONS\r\n");
-  send_all(client, buf, strlen(buf));
-  
-  snprintf(buf, sizeof(buf), "Access-Control-Allow-Origin: *\r\n");
-  send_all(client, buf, strlen(buf));
-  
-  snprintf(buf, sizeof(buf), "Access-Control-Allow-Methods: GET, POST, HEAD, OPTIONS\r\n");
-  send_all(client, buf, strlen(buf));
-  
-  snprintf(buf, sizeof(buf), "Access-Control-Allow-Headers: Content-Type\r\n");
-  send_all(client, buf, strlen(buf));
-  
-  snprintf(buf, sizeof(buf), "\r\n");
-  send_all(client, buf, strlen(buf));
+  http_response_buffer_t response;
+
+  if (http_build_options_response(&response) == 0)
+   net_write_all(client, response.data, response.length);
   
   log_access(client_ip, method, access_url, 200);
   close(client);
@@ -174,9 +166,7 @@ int parse_request_line(int client, char *method, size_t method_size,
 {
  char buf[1024];
  int numchars;
- size_t line_length;
- size_t i;
- size_t j;
+ int status;
 
  if (method == NULL || url == NULL || method_size < 2 || url_size < 2)
   return -1;
@@ -184,140 +174,71 @@ int parse_request_line(int client, char *method, size_t method_size,
  method[0] = '\0';
  url[0] = '\0';
 
- numchars = get_line(client, buf, sizeof(buf));
+ numchars = net_read_line(client, buf, sizeof(buf));
 
  if (numchars <= 0)
   return -1;
 
- if (numchars == (int)sizeof(buf) - 1 && buf[numchars - 1] != '\n') {
+ status = http_parse_request_line(buf, (size_t)numchars,
+                                  method, method_size, url, url_size);
+ if (status == 400 && numchars == (int)sizeof(buf) - 1 &&
+     buf[numchars - 1] != '\n')
+ {
   fprintf(stderr, "[reject] client_fd=%d request_line_too_long\n", client);
-  bad_request(client);
-  return 400;
  }
+ if (status == 400)
+  write_error_response(
+      client, 400, "BAD REQUEST",
+      "Your browser sent a bad request, such as a POST without a Content-Length.");
+ else if (status == 501)
+  write_error_response(client, 501, "Method Not Implemented",
+                       "HTTP request method not supported.");
+ else if (status == 414)
+  write_error_response(client, 414, "URI Too Long",
+                       "The requested URI exceeds the server limit.");
 
- line_length = (size_t)numchars;
- i = 0;
- j = 0;
- while (j < line_length && !ISspace(buf[j]))
- {
-  if (i + 1 >= method_size)
-  {
-   unimplemented(client);
-   return 501;
-  }
-  method[i] = buf[j];
-  i++;
-  j++;
- }
- method[i] = '\0';
-
- if (method[0] == '\0' ||
-     (strcasecmp(method, "GET") && strcasecmp(method, "POST") &&
-     strcasecmp(method, "HEAD") && strcasecmp(method, "OPTIONS"))
-    )
- {
-  unimplemented(client);
-  return 501;
- }
-
- i = 0;
- while (j < line_length && ISspace(buf[j]))
-  j++;
-
- while (j < line_length && !ISspace(buf[j]))
- {
-  if (i + 1 >= url_size)
-  {
-   uri_too_long(client);
-   return 414;
-  }
-  url[i] = buf[j];
-  i++;
-  j++;
- }
- url[i] = '\0';
-
- if (url[0] == '\0' || url[0] != '/')
- {
-  bad_request(client);
-  return 400;
- }
-
- return 0;
+ return status;
 }
 
 int read_headers(int client, int *content_length)
 {
- char buf[MAX_HEADER_LINE_SIZE];
+ char headers[MAX_HEADER_SIZE + MAX_HEADER_LINE_SIZE + 1];
+ char line[MAX_HEADER_LINE_SIZE];
  int numchars;
- int content_length_seen = 0;
  size_t header_size = 0;
+ int status;
 
  if (content_length != NULL)
   *content_length = -1;
 
- numchars = get_line(client, buf, sizeof(buf));
- while ((numchars > 0) && strcmp("\n", buf))
+ for (;;)
  {
-  if (numchars == (int)sizeof(buf) - 1 && buf[numchars - 1] != '\n')
+  numchars = net_read_line(client, line, sizeof(line));
+  if (numchars < 0)
+   return -1;
+  if (numchars == 0)
+   return 0;
+
+  if (numchars == (int)sizeof(line) - 1 && line[numchars - 1] != '\n')
   {
    fprintf(stderr, "[reject] client_fd=%d header_line_too_long\n", client);
    return 400;
   }
 
+  if (header_size + (size_t)numchars > sizeof(headers) - 1)
+   return 413;
+  memcpy(headers + header_size, line, (size_t)numchars);
   header_size += (size_t)numchars;
-  if (header_size > MAX_HEADER_SIZE)
-  {
+
+  headers[header_size] = '\0';
+  status = http_parse_headers(headers, header_size, content_length);
+  if (status == 413)
    fprintf(stderr, "[reject] client_fd=%d header_size=%zu too large\n",
            client, header_size);
-   return 413;
-  }
+  if (status != 0)
+   return status;
 
-  if (content_length != NULL &&
-      strncasecmp(buf, "Content-Length:", 15) == 0)
-  {
-   char *value = buf + 15;
-   char *end;
-   long len;
-
-   if (content_length_seen)
-    return 400;
-   content_length_seen = 1;
-
-   while (ISspace(*value))
-    value++;
-
-   errno = 0;
-   len = strtol(value, &end, 10);
-   while (*end == ' ' || *end == '\t')
-    end++;
-
-   if (value == end || errno == ERANGE || len < 0 ||
-       !(*end == '\0' || *end == '\r' || *end == '\n'))
-    return 400;
-
-   if (len > MAX_REQUEST_SIZE)
-    return 413;
-
-   *content_length = (int)len;
-  }
-
-  numchars = get_line(client, buf, sizeof(buf));
+  if (strcmp("\n", line) == 0)
+   return 0;
  }
-
- if (numchars < 0)
-  return -1;
-
- if (numchars > 0)
- {
-  header_size += (size_t)numchars;
-  if (header_size > MAX_HEADER_SIZE)
-  {
-   fprintf(stderr, "[reject] client_fd=%d header_size=%zu too large\n",
-           client, header_size);
-   return 413;
-  }
- }
-
- return 0;
 }
